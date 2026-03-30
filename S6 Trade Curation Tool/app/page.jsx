@@ -24,6 +24,7 @@ function ArtworkCard({ item, size = 'md' }) {
             src={item.image_url}
             alt={item.image_alt || item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
           />
         ) : (
