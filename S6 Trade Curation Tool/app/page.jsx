@@ -43,7 +43,7 @@ function ArtworkCard({ item, size = 'md' }) {
         )}
         <div className="mt-auto pt-2">
           <a
-            href={item.product_url}
+            href={item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-red-600 hover:text-red-800 font-medium"
