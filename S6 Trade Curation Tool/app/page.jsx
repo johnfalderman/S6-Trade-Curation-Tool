@@ -21,7 +21,7 @@ function ArtworkCard({ item, size = 'md' }) {
       <div className={`${imgSize} bg-gray-100 overflow-hidden`}>
         {item.image_url && !imgError ? (
           <img
-            src={item.image_url}
+            src={item.image_url?.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url}
             alt={item.image_alt || item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             referrerPolicy="no-referrer"
