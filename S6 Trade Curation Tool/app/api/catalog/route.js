@@ -4,61 +4,71 @@ import { saveCatalog, getCatalogMeta } from '../../../lib/catalog';
 // GET — return current catalog info
 export async function GET() {
   try {
-    const meta = getCatalogMeta();
+    const meta = await getCatalogMeta();
     return NextResponse.json({ success: true, ...meta });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
-// POST — accept a CSV text body and parse it into catalog.json
+// POST — accept catalog data and save it
+// Supports three formats:
+//   1. { compact: [{t,u,h,c,i,a}, ...] }  — client-side parsed (preferred, avoids 6MB limit)
+//   2. { csv: "..." }                       — full CSV in JSON body (legacy)
+//   3. raw text/plain or text/csv body      — full CSV text (legacy)
 export async function POST(request) {
   try {
     const contentType = request.headers.get('content-type') || '';
 
-    let csvText;
+    let records = [];
 
-    if (contentType.includes('text/plain') || contentType.includes('text/csv')) {
-      csvText = await request.text();
-    } else if (contentType.includes('application/json')) {
+    if (contentType.includes('application/json')) {
       const body = await request.json();
-      csvText = body.csv;
+
+      if (body.compact && Array.isArray(body.compact)) {
+        // Compact format from client-side PapaParse
+        records = body.compact
+          .filter(r => r.u)
+          .map(r => ({
+            title: r.t || '',
+            product_url: r.u || '',
+            product_handle: r.h || '',
+            source_collection: r.c || '',
+            image_url: r.i || '',
+            image_alt: r.a || '',
+          }));
+      } else if (body.csv) {
+        // Legacy JSON wrapper
+        const csvText = body.csv;
+        const parsed = parseCSV(csvText);
+        records = parsed.map(normalizeRecord).filter(r => r.product_url);
+      } else {
+        return NextResponse.json(
+          { error: 'Expected { compact: [...] } or { csv: "..." }' },
+          { status: 400 }
+        );
+      }
+    } else if (contentType.includes('text/plain') || contentType.includes('text/csv')) {
+      const csvText = await request.text();
+      const parsed = parseCSV(csvText);
+      records = parsed.map(normalizeRecord).filter(r => r.product_url);
     } else {
       return NextResponse.json(
-        { error: 'Send CSV as text/plain or JSON body with { csv: "..." }' },
+        { error: 'Send compact JSON, CSV as text/plain, or JSON body with { csv: "..." }' },
         { status: 400 }
       );
     }
-
-    if (!csvText || csvText.trim().length < 10) {
-      return NextResponse.json({ error: 'Empty CSV received.' }, { status: 400 });
-    }
-
-    // Parse CSV
-    const records = parseCSV(csvText);
 
     if (records.length === 0) {
-      return NextResponse.json({ error: 'No records found in CSV.' }, { status: 400 });
+      return NextResponse.json({ error: 'No valid records found in uploaded data.' }, { status: 400 });
     }
 
-    // Normalize field names
-    const normalized = records
-      .map(normalizeRecord)
-      .filter(r => r.product_url && r.title);
-
-    if (normalized.length === 0) {
-      return NextResponse.json(
-        { error: 'Could not find required fields (title, product_url) in CSV.' },
-        { status: 400 }
-      );
-    }
-
-    saveCatalog(normalized);
+    saveCatalog(records);
 
     return NextResponse.json({
       success: true,
-      count: normalized.length,
-      sampleTitles: normalized.slice(0, 3).map(r => r.title),
+      count: records.length,
+      sampleTitles: records.slice(0, 3).map(r => r.title),
     });
   } catch (err) {
     console.error('[/api/catalog POST]', err);
@@ -67,7 +77,7 @@ export async function POST(request) {
 }
 
 function parseCSV(text) {
-  const lines = text.split('\n').filter(Boolean);
+  const lines = text.split(/\r?\n/);
   if (lines.length < 2) return [];
 
   const headers = parseLine(lines[0]);
@@ -78,7 +88,7 @@ function parseCSV(text) {
     const cols = parseLine(lines[i]);
     const record = {};
     headers.forEach((h, idx) => {
-      record[h.trim().toLowerCase().replace(/\s+/g, '_')] = (cols[idx] || '').trim();
+      record[h] = cols[idx] ?? '';
     });
     records.push(record);
   }
@@ -88,12 +98,12 @@ function parseCSV(text) {
 
 function parseLine(line) {
   const cols = [];
-  let inQuote = false;
   let current = '';
+  let inQuotes = false;
   for (const ch of line) {
     if (ch === '"') {
-      inQuote = !inQuote;
-    } else if (ch === ',' && !inQuote) {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
       cols.push(current.replace(/^"|"$/g, '').trim());
       current = '';
     } else {
@@ -106,31 +116,18 @@ function parseLine(line) {
 
 const FIELD_MAP = {
   source_collection: ['source_collection', 'collection', 'source'],
-  page_num: ['page_num', 'page'],
   product_url: ['product_url', 'url', 'href', 'link'],
   product_handle: ['product_handle', 'handle', 'slug'],
   title: ['title', 'name', 'product_title'],
   image_url: ['image_url', 'img_url', 'image', 'img'],
   image_alt: ['image_alt', 'alt', 'alt_text'],
-  artwork_family: ['artwork_family', 'family', 'artwork_group'],
 };
 
-function normalizeRecord(record) {
-  const normalized = {};
-  for (const [normKey, aliases] of Object.entries(FIELD_MAP)) {
-    for (const alias of aliases) {
-      if (record[alias] !== undefined) {
-        normalized[normKey] = record[alias];
-        break;
-      }
-    }
-    if (!normalized[normKey]) normalized[normKey] = '';
+function normalizeRecord(raw) {
+  const out = {};
+  for (const [canonical, aliases] of Object.entries(FIELD_MAP)) {
+    const key = aliases.find(a => raw[a] !== undefined);
+    out[canonical] = key ? raw[key] : '';
   }
-  // Ensure URL is rooted
-  if (normalized.product_url && !normalized.product_url.startsWith('http')) {
-    if (!normalized.product_url.startsWith('/')) {
-      normalized.product_url = '/' + normalized.product_url;
-    }
-  }
-  return normalized;
+  return out;
 }
