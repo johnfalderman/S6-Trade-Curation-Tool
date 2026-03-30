@@ -1,159 +1,170 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 export default function CatalogPage() {
   const [meta, setMeta] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState(null);
-  const [uploadError, setUploadError] = useState(null);
-  const [csvText, setCsvText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [parseProgress, setParseProgress] = useState('');
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/catalog')
-      .then(r => r.json())
-      .then(setMeta)
-      .catch(() => {});
+    fetchMeta();
   }, []);
+
+  async function fetchMeta() {
+    try {
+      const res = await fetch('/api/catalog');
+      const data = await res.json();
+      setMeta(data);
+    } catch (e) {
+      console.error('Failed to fetch catalog meta:', e);
+    }
+  }
 
   async function handleFileUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
-    const text = await file.text();
-    setCsvText(text);
-  }
 
-  async function handleUpload() {
-    if (!csvText.trim()) return;
-    setUploading(true);
-    setUploadResult(null);
-    setUploadError(null);
+    setLoading(true);
+    setError('');
+    setMessage('');
+    setParseProgress('Reading file...');
 
     try {
+      setParseProgress('Loading CSV parser...');
+      await loadPapaParse();
+
+      setParseProgress('Parsing ' + file.name + ' (' + (file.size / 1024 / 1024).toFixed(1) + ' MB)...');
+
+      const records = await parseCSVClientSide(file);
+      setParseProgress('Parsed ' + records.length + ' records. Compressing...');
+
+      const compact = records
+        .filter(r => r.product_url || r.productUrl)
+        .map(r => ({
+          t: r.title || '',
+          u: r.product_url || r.productUrl || '',
+          h: r.product_handle || r.productHandle || '',
+          c: r.source_collection || r.sourceCollection || '',
+          i: r.image_url || r.imageUrl || '',
+          a: r.image_alt || r.imageAlt || '',
+        }));
+
+      const payload = JSON.stringify({ compact });
+      const payloadSizeMB = (new Blob([payload]).size / 1024 / 1024).toFixed(2);
+      setParseProgress('Uploading ' + payloadSizeMB + ' MB payload (' + compact.length + ' records)...');
+
       const res = await fetch('/api/catalog', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: csvText,
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
       });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setUploadResult(data);
-      // Refresh meta
-      const metaRes = await fetch('/api/catalog');
-      setMeta(await metaRes.json());
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Server error: ' + res.status);
+      }
+
+      setMessage('Catalog loaded: ' + data.count + ' products tagged and ready.');
+      setParseProgress('');
+      fetchMeta();
     } catch (err) {
-      setUploadError(err.message);
+      setError('Upload failed: ' + err.message);
+      setParseProgress('');
     } finally {
-      setUploading(false);
+      setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
-  const sourceLabel =
-    meta?.source === 'real'
-      ? 'Your crawled catalog'
-      : meta?.source === 'sample'
-      ? 'Sample catalog (demo data)'
-      : 'No catalog loaded';
+  function loadPapaParse() {
+    return new Promise((resolve, reject) => {
+      if (window.Papa) return resolve();
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js';
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Failed to load PapaParse'));
+      document.head.appendChild(script);
+    });
+  }
 
-  const statusColor =
-    meta?.source === 'real'
-      ? 'text-green-700 bg-green-50 border-green-200'
-      : meta?.source === 'sample'
-      ? 'text-amber-700 bg-amber-50 border-amber-200'
-      : 'text-red-700 bg-red-50 border-red-200';
+  function parseCSVClientSide(file) {
+    return new Promise((resolve, reject) => {
+      window.Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => resolve(results.data),
+        error: (err) => reject(new Error('CSV parse error: ' + err.message)),
+      });
+    });
+  }
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Catalog</h1>
-      <p className="text-gray-500 text-sm mb-8">
-        Load your crawled Society6 wall art catalog into the tool.
-      </p>
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-3xl mx-auto px-4 py-12">
+        <div className="mb-8">
+          <a href="/" className="text-sm text-blue-600 hover:underline">Back to Curation Tool</a>
+          <h1 className="text-2xl font-bold text-gray-900 mt-3">Catalog Management</h1>
+          <p className="text-gray-500 mt-1 text-sm">Load the Society6 wall art catalog to power recommendations.</p>
+        </div>
 
-      {/* Current status */}
-      {meta && (
-        <div className={`border rounded-lg p-4 mb-8 ${statusColor}`}>
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="font-semibold">{sourceLabel}</p>
-              <p className="text-sm mt-0.5">{meta.count?.toLocaleString()} records loaded</p>
+        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+          <h2 className="font-semibold text-gray-800 mb-3">Current Catalog</h2>
+          {meta ? (
+            <div className="space-y-1 text-sm">
+              <div className="flex items-center gap-2">
+                <span className={"inline-block w-2 h-2 rounded-full " + (meta.source === 'real' ? 'bg-green-500' : meta.source === 'sample' ? 'bg-yellow-400' : 'bg-gray-300')} />
+                <span className="font-medium text-gray-700">
+                  {meta.source === 'real' ? 'Real catalog loaded' : meta.source === 'sample' ? 'Sample catalog active' : 'No catalog loaded'}
+                </span>
+              </div>
+              {meta.count > 0 && <p className="text-gray-500 ml-4">{meta.count.toLocaleString()} products available</p>}
+              {meta.source === 'sample' && (
+                <p className="text-yellow-700 bg-yellow-50 border border-yellow-200 rounded px-3 py-2 mt-2 text-xs">
+                  Using demo data. Upload listing_records.csv below to enable real recommendations.
+                </p>
+              )}
             </div>
-            <span className="text-xs font-mono">
-              {meta.source === 'real' ? '✓ LIVE' : meta.source === 'sample' ? '⚠ DEMO' : '✗ EMPTY'}
-            </span>
-          </div>
-          {meta.sampleTitles?.length > 0 && (
-            <p className="text-xs mt-2 opacity-70">
-              Sample: {meta.sampleTitles.join(', ')}
-            </p>
+          ) : (
+            <p className="text-gray-400 text-sm">Loading status...</p>
           )}
         </div>
-      )}
 
-      {/* Upload form */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-5">
-        <div>
-          <p className="font-semibold text-gray-900 mb-1">Load Your Catalog CSV</p>
-          <p className="text-sm text-gray-500">
-            Upload the <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">listing_records.csv</code> from your Society6 crawl.
-            The file should have columns like: <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">title, product_url, image_url, source_collection</code>.
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-800 mb-1">Upload Catalog CSV</h2>
+          <p className="text-gray-500 text-sm mb-4">
+            Upload listing_records.csv from the crawl output folder. The file is parsed in your browser first, so large files work fine.
           </p>
-        </div>
-
-        <div>
-          <label className="text-sm font-medium text-gray-700 block mb-2">
-            Select CSV file
+          <label className={"flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors " + (loading ? 'border-gray-200 bg-gray-50 cursor-not-allowed' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50')}>
+            <div className="text-center">
+              <p className="font-medium text-gray-700">{loading ? 'Processing...' : 'Click to select listing_records.csv'}</p>
+              <p className="text-xs text-gray-400 mt-1">CSV files up to 50 MB supported</p>
+            </div>
+            <input ref={fileInputRef} type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileUpload} />
           </label>
-          <input
-            type="file"
-            accept=".csv,text/csv,text/plain"
-            onChange={handleFileUpload}
-            className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:border file:border-gray-300 file:rounded file:text-sm file:font-medium file:bg-gray-50 file:text-gray-700 hover:file:bg-gray-100"
-          />
-          {csvText && (
-            <p className="text-xs text-gray-400 mt-1.5">
-              {csvText.split('\n').length - 1} rows detected in file
-            </p>
+          {parseProgress && (
+            <div className="mt-4 flex items-center gap-3 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+              <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full flex-shrink-0" />
+              {parseProgress}
+            </div>
           )}
+          {message && <div className="mt-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-4 py-3">{message}</div>}
+          {error && <div className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3"><strong>Error:</strong> {error}</div>}
         </div>
 
-        {uploadResult && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-            <p className="text-sm font-medium text-green-800">
-              ✓ Catalog loaded — {uploadResult.count?.toLocaleString()} products ready
-            </p>
-            <p className="text-xs text-green-700 mt-1">
-              Sample: {uploadResult.sampleTitles?.join(', ')}
-            </p>
-          </div>
-        )}
-
-        {uploadError && (
-          <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm">
-            {uploadError}
-          </div>
-        )}
-
-        <button
-          onClick={handleUpload}
-          disabled={!csvText || uploading}
-          className="btn-primary"
-        >
-          {uploading ? 'Loading catalog…' : 'Load Catalog'}
-        </button>
-      </div>
-
-      {/* Manual option */}
-      <div className="mt-8 bg-gray-50 border border-gray-200 rounded-lg p-5">
-        <p className="text-sm font-semibold text-gray-700 mb-2">Alternative: Command-line load</p>
-        <p className="text-sm text-gray-500 mb-3">
-          If you have terminal access to the project folder, you can also run:
-        </p>
-        <pre className="text-xs bg-gray-900 text-gray-100 rounded p-3 overflow-x-auto">
-{`# From the project directory:
-npm run process-catalog path/to/listing_records.csv
-
-# Then restart the app`}
-        </pre>
+        <div className="mt-6 bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-800 mb-3">Where to find the file</h2>
+          <ol className="text-sm text-gray-600 space-y-2 list-decimal list-inside">
+            <li>Open your Downloads folder</li>
+            <li>Open the folder named society6-clean-wall-art-crawler</li>
+            <li>Open the output subfolder</li>
+            <li>Select listing_records.csv</li>
+          </ol>
+        </div>
       </div>
     </div>
   );
