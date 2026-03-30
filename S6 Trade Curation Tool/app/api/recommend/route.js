@@ -63,7 +63,7 @@ function parseBriefText(text) {
     photography:  ['photo', 'photograph', 'photography', 'realistic'],
     illustration: ['illustration', 'illustrated', 'drawing', 'sketch'],
     dramatic:     ['dramatic', 'bold', 'statement', 'impactful', 'striking'],
-    music:        ['music', 'jazz', 'blues', 'rock', 'band', 'concert', 'vinyl', 'instrument', 'guitar', 'piano', 'trumpet'],
+    music:        ['music', 'jazz', 'blues', 'rock', 'band', 'concert', 'vinyl', 'instrument', 'guitar', 'piano', 'trumpet', 'saxophone', 'melody', 'record', 'song', 'note', 'treble', 'clef', 'bass', 'rhythm', 'acoustic', 'musician', 'album', 'lyric', 'harmony'],
     urban:        ['urban', 'city', 'street', 'industrial', 'metropolitan', 'downtown'],
   };
   const styleTags = [];
@@ -87,7 +87,7 @@ function parseBriefText(text) {
   };
   const paletteTags = [];
   for (const [tag, kws] of Object.entries(paletteMap)) {
-    if (kws.some(kw => paletteField.includes(kw))) paletteTags.push(tag);
+    if (kws.some(kw => paletteField.includes(kw) || fullLower.includes(kw))) paletteTags.push(tag);
   }
 
   // Avoid tags — only from the labeled avoid field, not free text
@@ -121,7 +121,7 @@ function tagRecord(r) {
   const style = [];
   const palette = [];
 
-  if (/jazz|blues|rock|music|band|concert|vinyl|instrument|guitar|piano|trumpet|saxophone|drum/.test(text)) style.push('music');
+  if (/jazz|blues|rock|music|band|concert|vinyl|instrument|guitar|piano|trumpet|saxophone|drum|melody|record player|music note|treble|clef|acoustic|musician|album|lyric|harmony|rhythm|song/.test(text)) style.push('music');
   if (/abstract|geometric|expressionist/.test(text)) style.push('abstract');
   if (/photo|photograph/.test(text)) style.push('photography');
   if (/illustrat|drawing|sketch/.test(text)) style.push('illustration');
@@ -247,7 +247,7 @@ export async function POST(request) {
       }
       brief.moodboardNote = 'Keywords extracted from uploaded moodboard PDF.';
     } else if (hasMoodboard) {
-      brief.moodboardNote = 'Image-based moodboard received — text extraction not possible. Recommendations based on brief text only.';
+      brief.moodboardNote = 'Moodboard received but no text could be extracted (likely image-based). Recommendations are based on the brief text only. For best results, describe the vibe from the moodboard in the Style or Color Palette fields.';
     }
 
     // Load catalog
@@ -264,13 +264,29 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
     }
 
-    // Sample up to 2000 records for speed (avoids serverless timeout)
-    const sample = allRecords.length > 2000
-      ? [...allRecords].sort(() => 0.5 - Math.random()).slice(0, 2000)
-      : allRecords;
+    // Smart sampling: always include records that match the brief's style tags,
+    // then fill the rest randomly up to 2000. Prevents niche styles (e.g. music)
+    // from being washed out by random sampling.
+    let sample;
+    if (allRecords.length > 2000 && brief.styleTags.length > 0) {
+      const tagged = allRecords.map(tagRecord);
+      const relevant = tagged.filter(r =>
+        brief.styleTags.some(s => (r.style || []).includes(s))
+      );
+      const irrelevant = tagged.filter(r =>
+        !brief.styleTags.some(s => (r.style || []).includes(s))
+      );
+      const fillCount = Math.max(0, 2000 - relevant.length);
+      const randomFill = [...irrelevant].sort(() => 0.5 - Math.random()).slice(0, fillCount);
+      sample = [...relevant, ...randomFill];
+    } else {
+      sample = (allRecords.length > 2000
+        ? [...allRecords].sort(() => 0.5 - Math.random()).slice(0, 2000)
+        : allRecords
+      ).map(tagRecord);
+    }
 
     const scored = sample
-      .map(tagRecord)
       .map(r => ({ ...r, score: scoreRecord(r, brief) }))
       .filter(r => r.score > 0)
       .sort((a, b) => b.score - a.score);
