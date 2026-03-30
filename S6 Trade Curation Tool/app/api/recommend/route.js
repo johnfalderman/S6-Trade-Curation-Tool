@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getStore } from '@netlify/blobs';
 
 function parseBrief(text) {
-  if (!text) return { styleTags: [], paletteTags: [], avoidTags: [], galleryWall: false, projectType: 'other', pieceCount: 10 };
+  if (!text) return { projectName: '', styleTags: [], paletteTags: [], avoidTags: [], galleryWall: false, projectType: 'other', pieceCount: 10, rooms: [] };
   const lower = text.toLowerCase();
   const styleTags = [];
   const paletteTags = [];
@@ -66,7 +66,17 @@ function parseBrief(text) {
   const pieceMatch = lower.match(/(\d+)\s*(piece|print|artwork|work)/);
   const pieceCount = pieceMatch ? parseInt(pieceMatch[1]) : 10;
 
-  return { styleTags, paletteTags, avoidTags, galleryWall, projectType, pieceCount };
+  // Extract project name
+  const nameMatch = text.match(/project\s*name\s*[:\-]\s*(.+)/i);
+  const projectName = nameMatch ? nameMatch[1].trim() : '';
+
+  // Extract rooms/spaces
+  const roomsMatch = text.match(/room[s]?\s*[:\-]\s*(.+)/i) || text.match(/space[s]?\s*[:\-]\s*(.+)/i);
+  const rooms = roomsMatch
+    ? roomsMatch[1].split(/,|;/).map(r => r.trim()).filter(Boolean)
+    : [];
+
+  return { projectName, styleTags, paletteTags, avoidTags, galleryWall, projectType, pieceCount, rooms };
 }
 
 function tagRecord(r) {
@@ -184,20 +194,22 @@ export async function POST(request) {
       }
     }
 
-    const primaryCollection = deduped.slice(0, 8);
-    const accentAndExpansion = deduped.slice(8, 16);
-    const galleryWallSets = brief.galleryWall ? [deduped.slice(0, 5), deduped.slice(5, 10)] : [];
+    // Format gallery wall sets as objects: page.jsx expects gwSet.setNumber, gwSet.theme, gwSet.items
+    const galleryWallSets = brief.galleryWall
+      ? [
+          { setNumber: 1, theme: brief.styleTags[0] || 'curated', items: deduped.slice(0, 5) },
+          { setNumber: 2, theme: brief.styleTags[1] || 'accent', items: deduped.slice(5, 10) },
+        ]
+      : [];
 
     return NextResponse.json({
       brief,
-      primaryCollection,
-      accentAndExpansion,
+      // Field names must match page.jsx: results.primary, results.accent, results.totalScored, results.catalogSize
+      primary: deduped.slice(0, 8),
+      accent: deduped.slice(8, 16),
       galleryWallSets,
-      meta: {
-        totalScored: scored.length,
-        sampleSize: sample.length,
-        totalCatalog: allRecords.length,
-      }
+      totalScored: scored.length,
+      catalogSize: allRecords.length,
     });
   } catch (err) {
     console.error('Recommend error:', err);
