@@ -1,388 +1,406 @@
-/**
- * slides.js
- * Google Slides deck generator for S6 Trade Curation Tool.
- *
- * SETUP:
- * 1. Create a Google Cloud project and enable the Slides API + Drive API
- * 2. Create a Service Account and download the JSON key
- * 3. Base64-encode the key: cat key.json | base64
- * 4. Set GOOGLE_SERVICE_ACCOUNT_KEY=<base64 string> in .env.local
- */
-
-// ---- Slide layout constants (EMU = English Metric Units, 914400 per inch) ----
-const SLIDE_WIDTH = 9144000;  // 10 inches
-const SLIDE_HEIGHT = 5143500; // 7.5 inches (but Slides default is 5143500 = 7.5in? Actually standard is 7.5in = 6858000 EMU. Let's use Google Slides default: 9144000 x 5143500)
-
-const COLORS = {
-  background: { red: 0.98, green: 0.98, blue: 0.95 },
-  dark: { red: 0.10, green: 0.10, blue: 0.10 },
-  accent: { red: 0.91, green: 0.28, blue: 0.33 },
-  white: { red: 1, green: 1, blue: 1 },
-  gray: { red: 0.55, green: 0.55, blue: 0.55 },
-  lightgray: { red: 0.90, green: 0.90, blue: 0.90 },
-};
-
-// ---- Helpers ----
-function pt(points) {
-  return points * 12700; // points to EMU
-}
-
-function makeTextBox(id, text, x, y, w, h, opts = {}) {
-  const requests = [
-    {
-      createShape: {
-        objectId: id,
-        shapeType: 'TEXT_BOX',
-        elementProperties: {
-          pageObjectId: opts.pageId,
-          size: { width: { magnitude: w, unit: 'EMU' }, height: { magnitude: h, unit: 'EMU' } },
-          transform: { scaleX: 1, scaleY: 1, translateX: x, translateY: y, unit: 'EMU' },
-        },
-      },
-    },
-    {
-      insertText: { objectId: id, text },
-    },
-  ];
-
-  const styleOpts = {};
-  if (opts.fontSize) styleOpts.fontSize = { magnitude: opts.fontSize, unit: 'PT' };
-  if (opts.bold) styleOpts.bold = true;
-  if (opts.color) styleOpts.foregroundColor = { opaqueColor: { rgbColor: opts.color } };
-  if (opts.link) styleOpts.link = { url: opts.link };
-
-  if (Object.keys(styleOpts).length > 0) {
-    requests.push({
-      updateTextStyle: {
-        objectId: id,
-        style: styleOpts,
-        fields: Object.keys(styleOpts).join(','),
-      },
-    });
-  }
-
-  if (opts.alignment) {
-    requests.push({
-      updateParagraphStyle: {
-        objectId: id,
-        style: { alignment: opts.alignment },
-        fields: 'alignment',
-      },
-    });
-  }
-
-  return requests;
-}
-
-function makeFillColor(pageId, color) {
-  return {
-    updatePageProperties: {
-      objectId: pageId,
-      pageProperties: {
-        pageBackgroundFill: {
-          solidFill: { color: { rgbColor: color } },
-        },
-      },
-      fields: 'pageBackgroundFill',
-    },
-  };
-}
-
-function makeImage(id, url, x, y, w, h, pageId) {
-  return {
-    createImage: {
-      objectId: id,
-      url,
-      elementProperties: {
-        pageObjectId: pageId,
-        size: { width: { magnitude: w, unit: 'EMU' }, height: { magnitude: h, unit: 'EMU' } },
-        transform: { scaleX: 1, scaleY: 1, translateX: x, translateY: y, unit: 'EMU' },
-      },
-    },
-  };
-}
-
-// ---- Slide builders ----
-
-function buildCoverSlide(brief, existingSlideId) {
-  const pageId = existingSlideId || 'slide_cover';
-  const requests = [makeFillColor(pageId, COLORS.dark)];
-
-  // Title
-  requests.push(...makeTextBox(
-    `${pageId}_title`, 'Wall Art Curation',
-    pt(72), pt(120), SLIDE_WIDTH - pt(144), pt(60),
-    { pageId, fontSize: 36, bold: true, color: COLORS.white, alignment: 'CENTER' }
-  ));
-
-  // Project name
-  requests.push(...makeTextBox(
-    `${pageId}_project`, brief.projectName,
-    pt(72), pt(195), SLIDE_WIDTH - pt(144), pt(50),
-    { pageId, fontSize: 28, color: COLORS.accent, alignment: 'CENTER' }
-  ));
-
-  // Type + date
-  const typeLabel = brief.projectType.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
-  const date = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  requests.push(...makeTextBox(
-    `${pageId}_meta`, `${typeLabel}  ·  ${date}`,
-    pt(72), pt(265), SLIDE_WIDTH - pt(144), pt(36),
-    { pageId, fontSize: 16, color: COLORS.gray, alignment: 'CENTER' }
-  ));
-
-  // Society6 credit
-  requests.push(...makeTextBox(
-    `${pageId}_credit`, 'Curated from Society6',
-    pt(72), SLIDE_HEIGHT - pt(60), SLIDE_WIDTH - pt(144), pt(30),
-    { pageId, fontSize: 13, color: COLORS.gray, alignment: 'CENTER' }
-  ));
-
-  return requests;
-}
-
-function buildBriefSlide(brief, pageId) {
-  const requests = [makeFillColor(pageId, COLORS.background)];
-
-  // Header
-  requests.push(...makeTextBox(
-    `${pageId}_hdr`, 'Project Brief',
-    pt(48), pt(36), SLIDE_WIDTH - pt(96), pt(44),
-    { pageId, fontSize: 24, bold: true, color: COLORS.dark }
-  ));
-
-  const lines = [
-    `Project: ${brief.projectName}`,
-    `Type: ${brief.projectType.replace('_', ' ')}`,
-    brief.styleTags.length ? `Style: ${brief.styleTags.join(', ')}` : null,
-    brief.paletteTags.length ? `Palette: ${brief.paletteTags.join(', ')}` : null,
-    brief.avoidTags.length ? `Avoid: ${brief.avoidTags.join(', ')}` : null,
-    brief.rooms.length ? `Spaces: ${brief.rooms.join(', ')}` : null,
-    brief.galleryWall ? 'Gallery Wall: Yes' : null,
-    brief.pieceCount ? `Target Pieces: ${brief.pieceCount}` : null,
-  ].filter(Boolean);
-
-  requests.push(...makeTextBox(
-    `${pageId}_body`, lines.join('\n'),
-    pt(48), pt(100), SLIDE_WIDTH - pt(96), SLIDE_HEIGHT - pt(160),
-    { pageId, fontSize: 18, color: COLORS.dark }
-  ));
-
-  return requests;
-}
+import { google } from 'googleapis';
 
 /**
- * Build a grid slide with up to 4 artworks (2×2).
+ * Authenticate using individual credential env vars instead of a full JSON key.
+ * Set in Netlify:
+ *   GOOGLE_CLIENT_EMAIL  — the service account email
+ *   GOOGLE_PRIVATE_KEY   — the PEM key (Netlify stores \n literally; we fix that below)
  */
-function buildArtworkGridSlide(artworks, slideLabel, pageId) {
-  const requests = [makeFillColor(pageId, COLORS.background)];
+function getAuth() {
+  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+  // Netlify stores newlines as literal \n in env vars — replace them back
+  const privateKey = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 
-  // Section label
-  requests.push(...makeTextBox(
-    `${pageId}_lbl`, slideLabel,
-    pt(32), pt(18), SLIDE_WIDTH - pt(64), pt(32),
-    { pageId, fontSize: 13, color: COLORS.gray }
-  ));
-
-  const grid = [
-    { x: pt(32), y: pt(60) },
-    { x: SLIDE_WIDTH / 2 + pt(16), y: pt(60) },
-    { x: pt(32), y: SLIDE_HEIGHT / 2 + pt(16) },
-    { x: SLIDE_WIDTH / 2 + pt(16), y: SLIDE_HEIGHT / 2 + pt(16) },
-  ];
-
-  const cellW = SLIDE_WIDTH / 2 - pt(48);
-  const cellH = SLIDE_HEIGHT / 2 - pt(80);
-  const imgH = cellH - pt(50);
-
-  artworks.slice(0, 4).forEach((art, i) => {
-    const pos = grid[i];
-    const imgId = `${pageId}_img${i}`;
-    const titleId = `${pageId}_title${i}`;
-    const urlId = `${pageId}_url${i}`;
-
-    // Image
-    if (art.image_url) {
-      requests.push(makeImage(imgId, art.image_url, pos.x, pos.y, cellW, imgH, pageId));
-    }
-
-    // Title
-    const titleText = (art.title || 'Untitled').slice(0, 50);
-    requests.push(...makeTextBox(
-      titleId, titleText,
-      pos.x, pos.y + imgH + pt(4), cellW, pt(22),
-      { pageId, fontSize: 11, bold: true, color: COLORS.dark }
-    ));
-
-    // URL (clickable)
-    const urlText = 'View on Society6 →';
-    requests.push(...makeTextBox(
-      urlId, urlText,
-      pos.x, pos.y + imgH + pt(28), cellW, pt(18),
-      { pageId, fontSize: 10, color: COLORS.accent, link: art.product_url }
-    ));
-  });
-
-  return requests;
-}
-
-function buildGalleryWallSlide(gwSet, pageId) {
-  const requests = [makeFillColor(pageId, COLORS.background)];
-
-  requests.push(...makeTextBox(
-    `${pageId}_lbl`, `Gallery Wall Set ${gwSet.setNumber}  ·  ${gwSet.theme}`,
-    pt(32), pt(18), SLIDE_WIDTH - pt(64), pt(32),
-    { pageId, fontSize: 13, color: COLORS.gray }
-  ));
-
-  // 3 columns × 2 rows for up to 6 items
-  const cols = 3;
-  const rows = 2;
-  const colW = (SLIDE_WIDTH - pt(80)) / cols;
-  const rowH = (SLIDE_HEIGHT - pt(80)) / rows;
-  const imgH = rowH - pt(48);
-  const padding = pt(12);
-
-  gwSet.items.slice(0, 6).forEach((art, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const x = pt(32) + col * colW + (col > 0 ? padding : 0);
-    const y = pt(56) + row * rowH + (row > 0 ? padding : 0);
-
-    const imgId = `${pageId}_img${i}`;
-    const titleId = `${pageId}_ttl${i}`;
-    const urlId = `${pageId}_url${i}`;
-
-    if (art.image_url) {
-      requests.push(makeImage(imgId, art.image_url, x, y, colW - padding, imgH, pageId));
-    }
-
-    const titleText = (art.title || 'Untitled').slice(0, 35);
-    requests.push(...makeTextBox(
-      titleId, titleText,
-      x, y + imgH + pt(2), colW - padding, pt(18),
-      { pageId, fontSize: 9, bold: true, color: COLORS.dark }
-    ));
-
-    requests.push(...makeTextBox(
-      urlId, 'View →',
-      x, y + imgH + pt(22), colW - padding, pt(14),
-      { pageId, fontSize: 8, color: COLORS.accent, link: art.product_url }
-    ));
-  });
-
-  return requests;
-}
-
-// ---- Main export ----
-
-/**
- * Create a Google Slides deck from recommendations.
- * Returns the deck URL.
- * Throws if GOOGLE_SERVICE_ACCOUNT_KEY is not set.
- */
-async function createSlidesDeck(brief, recommendations) {
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY not configured');
+  if (!clientEmail || !privateKey) {
+    throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY env vars');
   }
 
-  const { google } = require('googleapis');
-
-  let credentials;
-  try {
-    const keyJson = Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_KEY, 'base64').toString('utf8');
-    credentials = JSON.parse(keyJson);
-  } catch (e) {
-    throw new Error('Invalid GOOGLE_SERVICE_ACCOUNT_KEY — must be base64-encoded service account JSON');
-  }
-
-  const auth = new google.auth.GoogleAuth({
-    credentials,
+  return new google.auth.JWT({
+    email: clientEmail,
+    key: privateKey,
     scopes: [
       'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/drive',
     ],
   });
+}
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function rgb(r, g, b) {
+  return { red: r / 255, green: g / 255, blue: b / 255 };
+}
+
+function pt(n) { return { magnitude: n, unit: 'PT' }; }
+
+function textStyle(opts = {}) {
+  return {
+    bold: opts.bold || false,
+    fontSize: opts.fontSize ? pt(opts.fontSize) : pt(12),
+    foregroundColor: { opaqueColor: { rgbColor: opts.color || rgb(30, 30, 30) } },
+    fontFamily: opts.font || 'Lato',
+  };
+}
+
+function solidFill(r, g, b) {
+  return { solidFill: { color: { rgbColor: rgb(r, g, b) } } };
+}
+
+// ─── Slide builders ───────────────────────────────────────────────────────────
+
+/** Cover slide */
+function makeCoverSlide(presentationId, brief) {
+  const slideId = 'cover';
+  const titleId = 'coverTitle';
+  const subId = 'coverSub';
+
+  return [
+    // Create blank slide
+    { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    // Dark background
+    { updatePageProperties: {
+      objectId: slideId,
+      pageProperties: { pageBackgroundFill: solidFill(20, 20, 30) },
+      fields: 'pageBackgroundFill',
+    }},
+    // Title text box
+    { createShape: {
+      objectId: titleId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(80) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 100, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: titleId, text: brief.projectName || 'Trade Curation' } },
+    { updateTextStyle: {
+      objectId: titleId,
+      style: textStyle({ bold: true, fontSize: 36, color: rgb(255, 255, 255) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    // Subtitle
+    { createShape: {
+      objectId: subId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(50) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 190, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: subId, text: `Society6 Wall Art Curation  •  ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}` } },
+    { updateTextStyle: {
+      objectId: subId,
+      style: textStyle({ fontSize: 14, color: rgb(180, 180, 200) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+  ];
+}
+
+/** Brief summary slide */
+function makeBriefSlide(presentationId, brief) {
+  const slideId = 'briefSlide';
+  const titleId = 'briefTitle';
+  const bodyId = 'briefBody';
+
+  const lines = [
+    `Project: ${brief.projectName || '—'}`,
+    `Type: ${brief.projectType || '—'}`,
+    `Style: ${(brief.styleTags || []).join(', ') || '—'}`,
+    `Palette: ${(brief.paletteTags || []).join(', ') || '—'}`,
+    `Avoid: ${(brief.avoidTags || []).join(', ') || '—'}`,
+    `Rooms: ${(brief.roomNeeds || []).join(', ') || '—'}`,
+    `Gallery Wall: ${brief.galleryWall ? 'Yes' : 'No'}`,
+    `Target Pieces: ${brief.targetPieceCount || '—'}`,
+  ].join('\n');
+
+  return [
+    { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    { updatePageProperties: {
+      objectId: slideId,
+      pageProperties: { pageBackgroundFill: solidFill(245, 245, 248) },
+      fields: 'pageBackgroundFill',
+    }},
+    { createShape: {
+      objectId: titleId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(40) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 20, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: titleId, text: 'Project Brief' } },
+    { updateTextStyle: {
+      objectId: titleId,
+      style: textStyle({ bold: true, fontSize: 22, color: rgb(30, 30, 50) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    { createShape: {
+      objectId: bodyId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(300) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 70, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: bodyId, text: lines } },
+    { updateTextStyle: {
+      objectId: bodyId,
+      style: textStyle({ fontSize: 13, color: rgb(60, 60, 80) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+  ];
+}
+
+/** Section header slide (e.g. "Primary Collection") */
+function makeSectionHeaderSlide(slideId, label) {
+  const titleId = `${slideId}_title`;
+  return [
+    { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    { updatePageProperties: {
+      objectId: slideId,
+      pageProperties: { pageBackgroundFill: solidFill(30, 30, 50) },
+      fields: 'pageBackgroundFill',
+    }},
+    { createShape: {
+      objectId: titleId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(80) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 130, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: titleId, text: label } },
+    { updateTextStyle: {
+      objectId: titleId,
+      style: textStyle({ bold: true, fontSize: 30, color: rgb(255, 255, 255) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+  ];
+}
+
+/**
+ * One artwork card slide.
+ * Layout: image on left (if image_url available), title + link on right.
+ */
+function makeArtworkSlide(slideId, item, index) {
+  const bgId = `${slideId}_bg`;
+  const titleId = `${slideId}_title`;
+  const linkId = `${slideId}_link`;
+  const collId = `${slideId}_coll`;
+  const numId = `${slideId}_num`;
+
+  const requests = [
+    { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    { updatePageProperties: {
+      objectId: slideId,
+      pageProperties: { pageBackgroundFill: solidFill(250, 250, 252) },
+      fields: 'pageBackgroundFill',
+    }},
+    // Index number (top left)
+    { createShape: {
+      objectId: numId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(40), height: pt(30) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 15, translateY: 10, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: numId, text: String(index + 1) } },
+    { updateTextStyle: {
+      objectId: numId,
+      style: textStyle({ fontSize: 11, color: rgb(160, 160, 180) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    // Title
+    { createShape: {
+      objectId: titleId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(360), height: pt(60) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 180, translateY: 60, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: titleId, text: item.title || 'Untitled' } },
+    { updateTextStyle: {
+      objectId: titleId,
+      style: textStyle({ bold: true, fontSize: 15, color: rgb(20, 20, 40) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    // Collection
+    { createShape: {
+      objectId: collId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(360), height: pt(30) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 180, translateY: 130, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: collId, text: item.source_collection || '' } },
+    { updateTextStyle: {
+      objectId: collId,
+      style: textStyle({ fontSize: 11, color: rgb(120, 120, 150) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    // Link
+    { createShape: {
+      objectId: linkId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(360), height: pt(30) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 180, translateY: 160, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: linkId, text: item.product_url || '' } },
+    { updateTextStyle: {
+      objectId: linkId,
+      style: textStyle({ fontSize: 10, color: rgb(60, 100, 200) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+  ];
+
+  // Add image if we have a URL
+  if (item.image_url) {
+    const imgId = `${slideId}_img`;
+    requests.push({
+      createImage: {
+        objectId: imgId,
+        url: item.image_url,
+        elementProperties: {
+          pageObjectId: slideId,
+          size: { width: pt(155), height: pt(155) },
+          transform: { scaleX: 1, scaleY: 1, translateX: 15, translateY: 55, unit: 'PT' },
+        },
+      },
+    });
+  }
+
+  return requests;
+}
+
+/** Gallery wall set slide */
+function makeGallerySetSlide(slideId, setObj) {
+  const titleId = `${slideId}_title`;
+  const bodyId = `${slideId}_body`;
+  const items = setObj.items || [];
+
+  const bodyText = items
+    .map((it, i) => `${i + 1}. ${it.title}\n   ${it.product_url}`)
+    .join('\n\n');
+
+  return [
+    { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    { updatePageProperties: {
+      objectId: slideId,
+      pageProperties: { pageBackgroundFill: solidFill(248, 248, 252) },
+      fields: 'pageBackgroundFill',
+    }},
+    { createShape: {
+      objectId: titleId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(40) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 15, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: titleId, text: `Gallery Wall Set ${setObj.setNumber}${setObj.theme ? ': ' + setObj.theme : ''}` } },
+    { updateTextStyle: {
+      objectId: titleId,
+      style: textStyle({ bold: true, fontSize: 18, color: rgb(30, 30, 50) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+    { createShape: {
+      objectId: bodyId,
+      shapeType: 'TEXT_BOX',
+      elementProperties: {
+        pageObjectId: slideId,
+        size: { width: pt(540), height: pt(310) },
+        transform: { scaleX: 1, scaleY: 1, translateX: 30, translateY: 65, unit: 'PT' },
+      },
+    }},
+    { insertText: { objectId: bodyId, text: bodyText || 'No items.' } },
+    { updateTextStyle: {
+      objectId: bodyId,
+      style: textStyle({ fontSize: 10, color: rgb(50, 50, 70) }),
+      fields: 'bold,fontSize,foregroundColor,fontFamily',
+    }},
+  ];
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+
+export async function createSlidesDeck(brief, { primary = [], accent = [], galleryWallSets = [] }) {
+  const auth = getAuth();
   const slides = google.slides({ version: 'v1', auth });
   const drive = google.drive({ version: 'v3', auth });
 
-  // 1. Create blank presentation
-  const createRes = await slides.presentations.create({
-    requestBody: { title: `S6 Curation — ${brief.projectName}` },
+  // Create a blank presentation
+  const presentation = await slides.presentations.create({
+    requestBody: { title: `${brief.projectName || 'S6 Trade Curation'} — Society6 Recommendations` },
   });
-  const presentationId = createRes.data.presentationId;
-  const firstSlideId = createRes.data.slides[0].objectId;
+  const presentationId = presentation.data.presentationId;
 
-  // 2. Build all slide update requests
-  const batchRequests = [];
-  const slideIds = [];
+  // Delete the default blank slide
+  const defaultSlideId = presentation.data.slides[0].objectId;
 
-  // Cover slide (reuse the default first slide)
-  batchRequests.push(...buildCoverSlide(brief, firstSlideId));
-  slideIds.push(firstSlideId);
+  const requests = [];
 
-  // Brief slide
-  const briefSlideId = 'slide_brief';
-  batchRequests.push({ duplicateObject: { objectId: firstSlideId, objectIds: { [firstSlideId]: briefSlideId } } });
-  batchRequests.push(...buildBriefSlide(brief, briefSlideId));
+  // Remove default slide first
+  requests.push({ deleteObject: { objectId: defaultSlideId } });
 
-  // Primary collection slides (4 per slide)
-  const { primary = [], accent = [], galleryWallSets = [] } = recommendations;
-  const primaryChunks = chunkArray(primary, 4);
-  primaryChunks.forEach((chunk, i) => {
-    const id = `slide_primary_${i}`;
-    batchRequests.push({ duplicateObject: { objectId: firstSlideId, objectIds: { [firstSlideId]: id } } });
-    batchRequests.push(...buildArtworkGridSlide(chunk, `Primary Collection (${i + 1}/${primaryChunks.length})`, id));
+  // Cover
+  requests.push(...makeCoverSlide(presentationId, brief));
+
+  // Brief summary
+  requests.push(...makeBriefSlide(presentationId, brief));
+
+  // Primary Collection header + slides
+  requests.push(...makeSectionHeaderSlide('sec_primary', 'Primary Collection'));
+  primary.forEach((item, i) => {
+    requests.push(...makeArtworkSlide(`primary_${i}`, item, i));
   });
 
-  // Accent slides
-  const accentChunks = chunkArray(accent, 4);
-  accentChunks.forEach((chunk, i) => {
-    const id = `slide_accent_${i}`;
-    batchRequests.push({ duplicateObject: { objectId: firstSlideId, objectIds: { [firstSlideId]: id } } });
-    batchRequests.push(...buildArtworkGridSlide(chunk, `Accent & Alternates (${i + 1}/${accentChunks.length})`, id));
-  });
+  // Accent & Alternates header + slides
+  if (accent.length > 0) {
+    requests.push(...makeSectionHeaderSlide('sec_accent', 'Accent & Alternates'));
+    accent.forEach((item, i) => {
+      requests.push(...makeArtworkSlide(`accent_${i}`, item, i));
+    });
+  }
 
-  // Gallery wall slides
-  galleryWallSets.forEach((gwSet) => {
-    const id = `slide_gw_${gwSet.setNumber}`;
-    batchRequests.push({ duplicateObject: { objectId: firstSlideId, objectIds: { [firstSlideId]: id } } });
-    batchRequests.push(...buildGalleryWallSlide(gwSet, id));
-  });
+  // Gallery Wall sets
+  if (galleryWallSets.length > 0) {
+    requests.push(...makeSectionHeaderSlide('sec_gallery', 'Gallery Wall Sets'));
+    galleryWallSets.forEach((setObj, i) => {
+      requests.push(...makeGallerySetSlide(`gw_${i}`, setObj));
+    });
+  }
 
-  // 3. Execute batch update
-  await slides.presentations.batchUpdate({
-    presentationId,
-    requestBody: { requests: batchRequests },
-  });
+  // Execute all requests in batches (API has a limit per call)
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < requests.length; i += BATCH_SIZE) {
+    const batch = requests.slice(i, i + BATCH_SIZE);
+    await slides.presentations.batchUpdate({
+      presentationId,
+      requestBody: { requests: batch },
+    });
+  }
 
-  // 4. Make publicly accessible (anyone with link can view)
+  // Make the file accessible (anyone with link can view)
   await drive.permissions.create({
     fileId: presentationId,
     requestBody: { role: 'reader', type: 'anyone' },
   });
 
-  // Optional: move to a specific folder
-  if (process.env.GOOGLE_DRIVE_FOLDER_ID) {
-    await drive.files.update({
-      fileId: presentationId,
-      addParents: process.env.GOOGLE_DRIVE_FOLDER_ID,
-    });
-  }
-
-  return {
-    url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
-    presentationId,
-  };
+  const deckUrl = `https://docs.google.com/presentation/d/${presentationId}/edit`;
+  return { presentationId, deckUrl };
 }
-
-function chunkArray(arr, size) {
-  const chunks = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunks.push(arr.slice(i, i + size));
-  }
-  return chunks;
-}
-
-module.exports = { createSlidesDeck };
