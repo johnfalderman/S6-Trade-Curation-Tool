@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Environment variables (never commit these)
+.env
+.env.local
+.env.*.local
+
+# The real catalog (large file — load via the app UI)
+data/catalog.json
+
+# Service account keys
+*.json
+!package.json
+!data/sample-catalog.json
+
+# OS
+.DS_Store
+Thumbs.db
