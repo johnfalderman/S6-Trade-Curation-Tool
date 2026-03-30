@@ -3,21 +3,28 @@ import { google } from 'googleapis';
 /**
  * Authenticate using individual credential env vars instead of a full JSON key.
  * Set in Netlify:
- *   GOOGLE_CLIENT_EMAIL  — the service account email
- *   GOOGLE_PRIVATE_KEY   — the PEM key (Netlify stores \n literally; we fix that below)
+ *   GOOGLE_CLIENT_EMAIL      — the service account email
+ *   GOOGLE_PRIVATE_KEY       — the PEM private key, base64-encoded (avoids newline issues)
+ *
+ * To get the base64 value, run in Terminal:
+ *   python3 -c "import json; d=json.load(open('~/Downloads/s6-trade-curation-*.json')); print(d['private_key'])" | base64 | tr -d '\n' | pbcopy
  */
 function getAuth() {
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-  // Netlify stores newlines as literal \n in env vars — replace them back
-  const privateKey = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+
+  // GOOGLE_PRIVATE_KEY is stored as base64 to avoid Netlify newline stripping issues
+  // Decode it back to the original PEM string
+  const privateKey = Buffer.from(process.env.GOOGLE_PRIVATE_KEY || '', 'base64').toString('utf8');
 
   if (!clientEmail || !privateKey) {
     throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY env vars');
   }
 
-  return new google.auth.JWT({
-    email: clientEmail,
-    key: privateKey,
+  return new google.auth.GoogleAuth({
+    credentials: {
+      client_email: clientEmail,
+      private_key: privateKey,
+    },
     scopes: [
       'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/drive',
