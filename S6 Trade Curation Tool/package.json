@@ -16,7 +16,8 @@
     "papaparse": "^5.4.1",
     "googleapis": "^140.0.1",
     "formidable": "^3.5.1",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "@anthropic-ai/sdk": "^0.39.0"
   },
   "devDependencies": {
     "@types/node": "^20",
