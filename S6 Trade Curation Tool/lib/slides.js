@@ -9,27 +9,30 @@ import { google } from 'googleapis';
  * To get the base64 value, run in Terminal:
  *   python3 -c "import json; d=json.load(open('~/Downloads/s6-trade-curation-*.json')); print(d['private_key'])" | base64 | tr -d '\n' | pbcopy
  */
-function getAuth() {
+async function getAuth() {
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
 
   // GOOGLE_PRIVATE_KEY is stored as base64 to avoid Netlify newline stripping issues
-  // Decode it back to the original PEM string
   const privateKey = Buffer.from(process.env.GOOGLE_PRIVATE_KEY || '', 'base64').toString('utf8');
 
   if (!clientEmail || !privateKey) {
     throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY env vars');
   }
 
-  return new google.auth.GoogleAuth({
-    credentials: {
-      client_email: clientEmail,
-      private_key: privateKey,
-    },
+  // JWT is the correct auth class for service accounts.
+  // GoogleAuth with credentials can fail silently; JWT + authorize() is explicit.
+  const auth = new google.auth.JWT({
+    email: clientEmail,
+    key: privateKey,
     scopes: [
       'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/drive',
     ],
   });
+
+  // Explicitly fetch the access token before any API calls
+  await auth.authorize();
+  return auth;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -346,7 +349,7 @@ function makeGallerySetSlide(slideId, setObj) {
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function createSlidesDeck(brief, { primary = [], accent = [], galleryWallSets = [] }) {
-  const auth = getAuth();
+  const auth = await getAuth();
   const slides = google.slides({ version: 'v1', auth });
   const drive = google.drive({ version: 'v3', auth });
 
