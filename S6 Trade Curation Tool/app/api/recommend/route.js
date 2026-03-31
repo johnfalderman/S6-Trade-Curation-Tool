@@ -237,6 +237,7 @@ async function rerankWithClaude(brief, candidates) {
   const themes = (brief.keyThemes || brief.styleTags || []).join(', ');
   const palette = (brief.paletteTags || []).join(', ');
   const avoid = (brief.avoidTags || []).join(', ');
+  const refinement = brief._refineFeedback ? `\nUSER REFINEMENT REQUEST: "${brief._refineFeedback}" — prioritize this above everything else.` : '';
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -249,7 +250,7 @@ PROJECT BRIEF:
 - Vibe / themes: ${themes || 'not specified'}
 - Color palette: ${palette || 'not specified'}
 - Project type: ${brief.projectType || 'other'}
-- Avoid: ${avoid || 'nothing specified'}
+- Avoid: ${avoid || 'nothing specified'}${refinement}
 
 CANDIDATE ARTWORKS (index: title — description [collection]):
 ${itemList}
@@ -296,10 +297,15 @@ export async function POST(request) {
 
     const contentType = request.headers.get('content-type') || '';
 
+    let refineFeedback = '';
+    let pinnedUrls = [];
+
     if (contentType.includes('multipart/form-data')) {
       const formData = await request.formData();
       briefText = formData.get('brief') || '';
       moodboardUrl = formData.get('moodboardUrl') || '';
+      refineFeedback = formData.get('refineFeedback') || '';
+      try { pinnedUrls = JSON.parse(formData.get('pinnedUrls') || '[]'); } catch {}
       const file = formData.get('moodboard');
       if (file && file.size > 0) {
         hasMoodboard = true;
@@ -310,6 +316,8 @@ export async function POST(request) {
       const body = await request.json();
       briefText = body.brief || '';
       moodboardUrl = body.moodboardUrl || '';
+      refineFeedback = body.refineFeedback || '';
+      pinnedUrls = body.pinnedUrls || [];
     }
 
     // ── Parse brief ──────────────────────────────────────────────────────────
@@ -318,8 +326,8 @@ export async function POST(request) {
 
     if (hasAnthropicKey) {
       try {
-        // Merge PDF keywords into brief text if available
-        const fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
+        let fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
+        if (refineFeedback) fullText += `\n\n--- USER REFINEMENT FEEDBACK ---\n${refineFeedback}`;
         brief = await parseBriefWithClaude(fullText);
         brief.parsedBy = 'claude';
         if (pdfKeywords) brief.moodboardNote = 'Moodboard text extracted and incorporated into recommendations.';
@@ -393,10 +401,24 @@ export async function POST(request) {
       }
     }
 
+    // ── Pinned items — force-include specific Society6 URLs ───────────────────
+    const pinnedRecords = [];
+    if (pinnedUrls.length > 0) {
+      for (const url of pinnedUrls) {
+        const handle = url.split('/products/')[1]?.split('?')[0]?.split('/')[0];
+        if (!handle) continue;
+        const found = allRecords.find(r =>
+          r.product_handle === handle || (r.product_url || '').includes(handle)
+        );
+        if (found) pinnedRecords.push({ ...normalize(tagRecord(found)), pinned: true });
+      }
+    }
+
     // ── LLM re-ranking (if API key available) ─────────────────────────────────
     let finalResults;
     if (hasAnthropicKey && deduped.length >= 5) {
       try {
+        if (refineFeedback) brief._refineFeedback = refineFeedback;
         const reranked = await rerankWithClaude(brief, deduped);
         finalResults = reranked.length >= 8 ? reranked : deduped.slice(0, 20);
       } catch (e) {
@@ -407,18 +429,23 @@ export async function POST(request) {
       finalResults = deduped.slice(0, 20);
     }
 
+    // Merge pinned items at the front, deduplicate
+    const pinnedUrls2 = new Set(pinnedRecords.map(r => r.product_url));
+    const unpinned = finalResults.filter(r => !pinnedUrls2.has(r.product_url));
+    const mergedResults = [...pinnedRecords, ...unpinned];
+
     // ── Gallery wall sets ─────────────────────────────────────────────────────
     const galleryWallSets = brief.galleryWall
       ? [
-          { setNumber: 1, theme: (brief.keyThemes || brief.styleTags || [])[0] || 'curated', items: finalResults.slice(0, 5) },
-          { setNumber: 2, theme: (brief.keyThemes || brief.styleTags || [])[1] || 'accent', items: finalResults.slice(5, 10) },
+          { setNumber: 1, theme: (brief.keyThemes || brief.styleTags || [])[0] || 'curated', items: mergedResults.slice(0, 5) },
+          { setNumber: 2, theme: (brief.keyThemes || brief.styleTags || [])[1] || 'accent', items: mergedResults.slice(5, 10) },
         ]
       : [];
 
     return NextResponse.json({
       brief,
-      primary: finalResults.slice(0, 8),
-      accent: finalResults.slice(8, 16),
+      primary: mergedResults.slice(0, 8),
+      accent: mergedResults.slice(8, 16),
       galleryWallSets,
       totalScored: scored.length,
       catalogSize: allRecords.length,
