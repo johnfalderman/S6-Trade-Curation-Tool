@@ -1,5 +1,13 @@
 import { google } from 'googleapis';
 
+/**
+ * Authenticate using the full service account JSON stored as base64.
+ * Set in Netlify:
+ *   GOOGLE_SERVICE_ACCOUNT_JSON — the entire service account JSON file, base64-encoded
+ *
+ * To get the base64 value, run in Terminal:
+ *   base64 -i ~/path/to/service-account.json | tr -d '\n' | pbcopy
+ */
 async function getAuth() {
   const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!b64) throw new Error('Missing GOOGLE_SERVICE_ACCOUNT_JSON env var');
@@ -19,6 +27,12 @@ async function getAuth() {
   return auth.getClient();
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function rgb(r, g, b) {
+  return { red: r / 255, green: g / 255, blue: b / 255 };
+}
+
 function pt(n) { return { magnitude: n, unit: 'PT' }; }
 
 function textStyle(opts = {}) {
@@ -36,18 +50,22 @@ function solidFill(r, g, b) {
 
 // ─── Slide builders ───────────────────────────────────────────────────────────
 
+/** Cover slide */
 function makeCoverSlide(presentationId, brief) {
   const slideId = 'cover';
   const titleId = 'coverTitle';
   const subId = 'coverSub';
 
   return [
+    // Create blank slide
     { createSlide: { objectId: slideId, slideLayoutReference: { predefinedLayout: 'BLANK' } } },
+    // Dark background
     { updatePageProperties: {
       objectId: slideId,
       pageProperties: { pageBackgroundFill: solidFill(20, 20, 30) },
       fields: 'pageBackgroundFill',
     }},
+    // Title text box
     { createShape: {
       objectId: titleId,
       shapeType: 'TEXT_BOX',
@@ -63,6 +81,7 @@ function makeCoverSlide(presentationId, brief) {
       style: textStyle({ bold: true, fontSize: 36, color: rgb(255, 255, 255) }),
       fields: 'bold,fontSize,foregroundColor,fontFamily',
     }},
+    // Subtitle
     { createShape: {
       objectId: subId,
       shapeType: 'TEXT_BOX',
@@ -81,6 +100,7 @@ function makeCoverSlide(presentationId, brief) {
   ];
 }
 
+/** Brief summary slide */
 function makeBriefSlide(presentationId, brief) {
   const slideId = 'briefSlide';
   const titleId = 'briefTitle';
@@ -137,6 +157,7 @@ function makeBriefSlide(presentationId, brief) {
   ];
 }
 
+/** Section header slide (e.g. "Primary Collection") */
 function makeSectionHeaderSlide(slideId, label) {
   const titleId = `${slideId}_title`;
   return [
@@ -164,7 +185,12 @@ function makeSectionHeaderSlide(slideId, label) {
   ];
 }
 
+/**
+ * One artwork card slide.
+ * Layout: image on left (if image_url available), title + link on right.
+ */
 function makeArtworkSlide(slideId, item, index) {
+  const bgId = `${slideId}_bg`;
   const titleId = `${slideId}_title`;
   const linkId = `${slideId}_link`;
   const collId = `${slideId}_coll`;
@@ -177,6 +203,7 @@ function makeArtworkSlide(slideId, item, index) {
       pageProperties: { pageBackgroundFill: solidFill(250, 250, 252) },
       fields: 'pageBackgroundFill',
     }},
+    // Index number (top left)
     { createShape: {
       objectId: numId,
       shapeType: 'TEXT_BOX',
@@ -192,6 +219,7 @@ function makeArtworkSlide(slideId, item, index) {
       style: textStyle({ fontSize: 11, color: rgb(160, 160, 180) }),
       fields: 'bold,fontSize,foregroundColor,fontFamily',
     }},
+    // Title
     { createShape: {
       objectId: titleId,
       shapeType: 'TEXT_BOX',
@@ -207,6 +235,7 @@ function makeArtworkSlide(slideId, item, index) {
       style: textStyle({ bold: true, fontSize: 15, color: rgb(20, 20, 40) }),
       fields: 'bold,fontSize,foregroundColor,fontFamily',
     }},
+    // Collection
     { createShape: {
       objectId: collId,
       shapeType: 'TEXT_BOX',
@@ -222,6 +251,7 @@ function makeArtworkSlide(slideId, item, index) {
       style: textStyle({ fontSize: 11, color: rgb(120, 120, 150) }),
       fields: 'bold,fontSize,foregroundColor,fontFamily',
     }},
+    // Link
     { createShape: {
       objectId: linkId,
       shapeType: 'TEXT_BOX',
@@ -239,6 +269,7 @@ function makeArtworkSlide(slideId, item, index) {
     }},
   ];
 
+  // Add image if we have a URL
   if (item.image_url) {
     const imgId = `${slideId}_img`;
     requests.push({
@@ -257,6 +288,7 @@ function makeArtworkSlide(slideId, item, index) {
   return requests;
 }
 
+/** Gallery wall set slide */
 function makeGallerySetSlide(slideId, setObj) {
   const titleId = `${slideId}_title`;
   const bodyId = `${slideId}_body`;
@@ -313,22 +345,33 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   const slides = google.slides({ version: 'v1', auth });
   const drive = google.drive({ version: 'v3', auth });
 
+  // Create a blank presentation
   const presentation = await slides.presentations.create({
     requestBody: { title: `${brief.projectName || 'S6 Trade Curation'} — Society6 Recommendations` },
   });
   const presentationId = presentation.data.presentationId;
 
+  // Delete the default blank slide
   const defaultSlideId = presentation.data.slides[0].objectId;
+
   const requests = [];
 
+  // Remove default slide first
   requests.push({ deleteObject: { objectId: defaultSlideId } });
+
+  // Cover
   requests.push(...makeCoverSlide(presentationId, brief));
+
+  // Brief summary
   requests.push(...makeBriefSlide(presentationId, brief));
+
+  // Primary Collection header + slides
   requests.push(...makeSectionHeaderSlide('sec_primary', 'Primary Collection'));
   primary.forEach((item, i) => {
     requests.push(...makeArtworkSlide(`primary_${i}`, item, i));
   });
 
+  // Accent & Alternates header + slides
   if (accent.length > 0) {
     requests.push(...makeSectionHeaderSlide('sec_accent', 'Accent & Alternates'));
     accent.forEach((item, i) => {
@@ -336,6 +379,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
     });
   }
 
+  // Gallery Wall sets
   if (galleryWallSets.length > 0) {
     requests.push(...makeSectionHeaderSlide('sec_gallery', 'Gallery Wall Sets'));
     galleryWallSets.forEach((setObj, i) => {
@@ -343,6 +387,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
     });
   }
 
+  // Execute all requests in batches (API has a limit per call)
   const BATCH_SIZE = 50;
   for (let i = 0; i < requests.length; i += BATCH_SIZE) {
     const batch = requests.slice(i, i + BATCH_SIZE);
@@ -353,7 +398,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   }
 
   // Share with the trade team user directly.
-  // 'type: anyone' is blocked by the Google Workspace org policy on this project,
+  // Note: 'type: anyone' is blocked by the Google Workspace org policy on this project,
   // so we share with the specific user email instead.
   await drive.permissions.create({
     fileId: presentationId,
