@@ -1,39 +1,22 @@
 import { google } from 'googleapis';
 
-/**
- * Authenticate using individual credential env vars instead of a full JSON key.
- * Set in Netlify:
- *   GOOGLE_CLIENT_EMAIL      — the service account email
- *   GOOGLE_PRIVATE_KEY       — the PEM private key, base64-encoded (avoids newline issues)
- */
 async function getAuth() {
-  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!b64) throw new Error('Missing GOOGLE_SERVICE_ACCOUNT_JSON env var');
 
-  // GOOGLE_PRIVATE_KEY is stored as base64 to avoid Netlify newline stripping issues
-const privateKey = Buffer.from(process.env.GOOGLE_PRIVATE_KEY || '', 'base64')
-  .toString('utf8')
-  .replace(/\\n/g, '\n');
-  if (!clientEmail || !privateKey) {
-    throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY env vars');
-  }
+  const credentials = JSON.parse(
+    Buffer.from(b64, 'base64').toString('utf8')
+  );
 
-  const auth = new google.auth.JWT({
-    email: clientEmail,
-    key: privateKey,
+  const auth = new google.auth.GoogleAuth({
+    credentials,
     scopes: [
       'https://www.googleapis.com/auth/presentations',
       'https://www.googleapis.com/auth/drive',
     ],
   });
 
-  await auth.authorize();
-  return auth;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function rgb(r, g, b) {
-  return { red: r / 255, green: g / 255, blue: b / 255 };
+  return auth.getClient();
 }
 
 function pt(n) { return { magnitude: n, unit: 'PT' }; }
