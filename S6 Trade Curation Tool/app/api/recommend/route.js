@@ -320,26 +320,41 @@ export async function POST(request) {
       pinnedUrls = body.pinnedUrls || [];
     }
 
-    // ── Parse brief ──────────────────────────────────────────────────────────
-    let brief;
+    // ── Parse brief + load catalog in parallel ────────────────────────────────
     const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
+    const store = getStore('catalog');
 
+    let fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
+    if (refineFeedback) fullText += `\n\n--- USER REFINEMENT FEEDBACK ---\n${refineFeedback}`;
+
+    // Run Claude brief parse AND catalog load simultaneously to save ~2 seconds
+    let briefResult, raw;
     if (hasAnthropicKey) {
-      try {
-        let fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
-        if (refineFeedback) fullText += `\n\n--- USER REFINEMENT FEEDBACK ---\n${refineFeedback}`;
-        brief = await parseBriefWithClaude(fullText);
-        brief.parsedBy = 'claude';
-        if (pdfKeywords) brief.moodboardNote = 'Moodboard text extracted and incorporated into recommendations.';
-        else if (hasMoodboard) brief.moodboardNote = 'Image-based moodboard received. For best results, describe the moodboard vibe in your brief.';
-      } catch (e) {
-        console.warn('Claude brief parse failed, falling back:', e.message);
-        brief = parseBriefText(briefText);
-        brief.parsedBy = 'regex-fallback';
-      }
+      [briefResult, raw] = await Promise.all([
+        parseBriefWithClaude(fullText).catch(e => {
+          console.warn('Claude brief parse failed, falling back:', e.message);
+          return null; // will fall back to regex below
+        }),
+        store.get('records', { type: 'text' }),
+      ]);
+    } else {
+      raw = await store.get('records', { type: 'text' });
+      briefResult = null;
+    }
+
+    if (!raw) {
+      return NextResponse.json({ error: 'No catalog loaded. Please upload your catalog first.' }, { status: 400 });
+    }
+
+    let brief;
+    if (briefResult) {
+      brief = briefResult;
+      brief.parsedBy = 'claude';
+      if (pdfKeywords) brief.moodboardNote = 'Moodboard text extracted and incorporated into recommendations.';
+      else if (hasMoodboard) brief.moodboardNote = 'Image-based moodboard received. For best results, describe the moodboard vibe in your brief.';
     } else {
       brief = parseBriefText(briefText);
-      brief.parsedBy = 'regex';
+      brief.parsedBy = hasAnthropicKey ? 'regex-fallback' : 'regex';
       if (pdfKeywords) {
         const pdfBrief = parseBriefText(pdfKeywords);
         for (const tag of pdfBrief.styleTags) if (!brief.styleTags.includes(tag)) brief.styleTags.push(tag);
@@ -348,13 +363,6 @@ export async function POST(request) {
       } else if (hasMoodboard) {
         brief.moodboardNote = 'Image-based moodboard — add ANTHROPIC_API_KEY to Netlify for smarter recommendations.';
       }
-    }
-
-    // ── Load catalog ─────────────────────────────────────────────────────────
-    const store = getStore('catalog');
-    const raw = await store.get('records', { type: 'text' });
-    if (!raw) {
-      return NextResponse.json({ error: 'No catalog loaded. Please upload your catalog first.' }, { status: 400 });
     }
 
     let allRecords;
