@@ -221,48 +221,6 @@ function normalize(r) {
   };
 }
 
-// ─── LLM Re-ranker ────────────────────────────────────────────────────────────
-// Fast re-rank: 25 candidates, 200 tokens — stays within Netlify's 10s limit.
-async function rerankWithClaude(brief, candidates) {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const pool = candidates.slice(0, 25);
-  const itemList = pool.map((item, i) =>
-    `${i}: "${item.title}" [${item.source_collection || ''}]`
-  ).join('\n');
-
-  const themes = (brief.keyThemes || brief.styleTags || []).join(', ');
-  const palette = (brief.paletteTags || []).join(', ');
-  const avoid = (brief.avoidTags || []).join(', ');
-  const refinement = brief._refineFeedback ? `\nREFINEMENT: "${brief._refineFeedback}"` : '';
-
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 200,
-    messages: [{
-      role: 'user',
-      content: `Art curator for Society6 trade. Pick the best artworks for this brief.
-Themes: ${themes || 'any'} | Palette: ${palette || 'any'} | Avoid: ${avoid || 'nothing'}${refinement}
-
-Artworks:
-${itemList}
-
-Return ONLY a JSON array of indices, best first, max 20. Example: [3,12,0,7]`
-    }]
-  });
-
-  try {
-    const raw = message.content[0].text.trim();
-    const match = raw.match(/\[[\d,\s]+\]/);
-    const indices = JSON.parse(match ? match[0] : raw);
-    return indices.map(i => pool[i]).filter(Boolean);
-  } catch (e) {
-    console.warn('Re-rank parse failed, using keyword order:', e.message);
-    return candidates.slice(0, 20);
-  }
-}
-
 // ─── PDF Text Extraction ─────────────────────────────────────────────────────
 
 async function extractPdfKeywords(fileBuffer) {
@@ -317,13 +275,13 @@ export async function POST(request) {
     let fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
     if (refineFeedback) fullText += `\n\n--- USER REFINEMENT FEEDBACK ---\n${refineFeedback}`;
 
-    // Run Claude brief parse AND catalog load simultaneously to save ~2-3 seconds
+    // Run Claude brief parse AND catalog load simultaneously to save ~2 seconds
     let briefResult, raw;
     if (hasAnthropicKey) {
       [briefResult, raw] = await Promise.all([
         parseBriefWithClaude(fullText).catch(e => {
           console.warn('Claude brief parse failed, falling back:', e.message);
-          return null;
+          return null; // will fall back to regex below
         }),
         store.get('records', { type: 'text' }),
       ]);
@@ -412,20 +370,11 @@ export async function POST(request) {
       }
     }
 
-    // ── LLM re-ranking: fast pass over top 25 to stay within 10s limit ───────────
-    let finalResults;
-    if (hasAnthropicKey && deduped.length >= 5) {
-      try {
-        if (refineFeedback) brief._refineFeedback = refineFeedback;
-        const reranked = await rerankWithClaude(brief, deduped);
-        finalResults = reranked.length >= 8 ? reranked : deduped.slice(0, 20);
-      } catch (e) {
-        console.warn('Re-rank failed, using keyword order:', e.message);
-        finalResults = deduped.slice(0, 20);
-      }
-    } else {
-      finalResults = deduped.slice(0, 20);
-    }
+    // ── Final results ─────────────────────────────────────────────────────────
+    // Claude brief parsing (above, run in parallel with catalog load) does the
+    // heavy lifting. A second LLM re-ranking call would push us over Netlify's
+    // 10-second free-plan function limit, so we rely on keyword scoring order.
+    const finalResults = deduped.slice(0, 20);
 
     // Merge pinned items at the front, deduplicate
     const pinnedUrls2 = new Set(pinnedRecords.map(r => r.product_url));
@@ -453,4 +402,4 @@ export async function POST(request) {
     console.error('Recommend error:', err);
     return NextResponse.json({ error: err.message || 'Failed to generate recommendations' }, { status: 500 });
   }
-}
+} 
