@@ -10,8 +10,9 @@ async function getAuth() {
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
 
   // GOOGLE_PRIVATE_KEY is stored as base64 to avoid Netlify newline stripping issues
-  const privateKey = Buffer.from(process.env.GOOGLE_PRIVATE_KEY || '', 'base64').toString('utf8');
-
+const privateKey = Buffer.from(process.env.GOOGLE_PRIVATE_KEY || '', 'base64')
+  .toString('utf8')
+  .replace(/\\n/g, '\n');
   if (!clientEmail || !privateKey) {
     throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY env vars');
   }
