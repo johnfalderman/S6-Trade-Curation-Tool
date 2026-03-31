@@ -408,3 +408,27 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   const deckUrl = `https://docs.google.com/presentation/d/${presentationId}/edit`;
   return { presentationId, deckUrl };
 }
+
+// ─── HTTP Route Handler ───────────────────────────────────────────────────────
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    const { brief, primary, accent, galleryWallSets } = body;
+
+    if (!brief) {
+      return Response.json({ error: 'Missing brief in request body' }, { status: 400 });
+    }
+
+    const result = await createSlidesDeck(brief, {
+      primary: primary || [],
+      accent: accent || [],
+      galleryWallSets: galleryWallSets || [],
+    });
+
+    return Response.json(result);
+  } catch (error) {
+    console.error('Slides generation error:', error);
+    return Response.json({ error: error.message }, { status: 500 });
+  }
+}
