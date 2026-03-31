@@ -202,7 +202,13 @@ export default function HomePage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Unknown error')
-      setSlidesResult(data)
+      const link = document.createElement('a')
+      link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
+      link.download = data.filename || 'S6-Curation.pptx'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      setSlidesResult({ filename: data.filename })
     } catch (err) {
       setSlidesError(err.message)
     } finally {
@@ -477,8 +483,8 @@ export default function HomePage() {
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div>
-                <div className="font-semibold text-gray-900 mb-1">Generate Google Slides Deck</div>
-                <p className="text-sm text-gray-500">Creates a presentation with cover, brief summary, primary collection, accents, and gallery wall sets.</p>
+                <div className="font-semibold text-gray-900 mb-1">Generate PowerPoint Deck</div>
+                <p className="text-sm text-gray-500">Downloads a .pptx file with cover, brief summary, primary collection, accents, and gallery wall sets.</p>
               </div>
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent shrink-0">
                 {slidesLoading ? 'Building deck…' : 'Generate Slides Deck'}
@@ -487,11 +493,8 @@ export default function HomePage() {
 
             {slidesResult && (
               <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-green-800 mb-2">Deck created!</div>
-                <a href={slidesResult.deckUrl} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-sm font-medium text-green-700 hover:text-green-900 underline">
-                  Open Google Slides Deck →
-                </a>
+                <div className="text-sm font-medium text-green-800 mb-2">✓ Deck downloaded!</div>
+                <div className="text-sm text-green-700">{slidesResult.filename} — check your Downloads folder.</div>
               </div>
             )}
 
