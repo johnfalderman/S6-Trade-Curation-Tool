@@ -402,7 +402,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   // so we share with the specific user email instead.
   await drive.permissions.create({
     fileId: presentationId,
-    requestBody: { role: 'writer', type: 'user', emailAddress: 'jalderman@gmail.com' },
+requestBody: { role: 'writer', type: 'user', emailAddress: 'john.alderman@leafgroup.com' },
   });
 
   const deckUrl = `https://docs.google.com/presentation/d/${presentationId}/edit`;
