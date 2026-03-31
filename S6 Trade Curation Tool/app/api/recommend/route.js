@@ -222,48 +222,38 @@ function normalize(r) {
 }
 
 // ─── LLM Re-ranker ────────────────────────────────────────────────────────────
-// Sends top keyword-matched candidates to Claude for semantic re-ranking.
-// Returns the best matches in order, filtered against avoid criteria.
-
+// Fast re-rank: 25 candidates, 200 tokens — stays within Netlify's 10s limit.
 async function rerankWithClaude(brief, candidates) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const pool = candidates.slice(0, 60);
+  const pool = candidates.slice(0, 25);
   const itemList = pool.map((item, i) =>
-    `${i}: "${item.title}"${item.image_alt ? ' — ' + item.image_alt : ''} [${item.source_collection || ''}]`
+    `${i}: "${item.title}" [${item.source_collection || ''}]`
   ).join('\n');
 
   const themes = (brief.keyThemes || brief.styleTags || []).join(', ');
   const palette = (brief.paletteTags || []).join(', ');
   const avoid = (brief.avoidTags || []).join(', ');
-  const refinement = brief._refineFeedback ? `\nUSER REFINEMENT REQUEST: "${brief._refineFeedback}" — prioritize this above everything else.` : '';
+  const refinement = brief._refineFeedback ? `\nREFINEMENT: "${brief._refineFeedback}"` : '';
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 512,
+    max_tokens: 200,
     messages: [{
       role: 'user',
-      content: `You are a professional interior design art curator for a Society6 trade account.
+      content: `Art curator for Society6 trade. Pick the best artworks for this brief.
+Themes: ${themes || 'any'} | Palette: ${palette || 'any'} | Avoid: ${avoid || 'nothing'}${refinement}
 
-PROJECT BRIEF:
-- Vibe / themes: ${themes || 'not specified'}
-- Color palette: ${palette || 'not specified'}
-- Project type: ${brief.projectType || 'other'}
-- Avoid: ${avoid || 'nothing specified'}${refinement}
-
-CANDIDATE ARTWORKS (index: title — description [collection]):
+Artworks:
 ${itemList}
 
-Select the 20 best matches for this brief. Hard-exclude anything that clearly matches the avoid criteria (e.g. if avoiding "light and airy", skip watercolors, pastels, soft florals).
-
-Return ONLY a JSON array of up to 20 item indices, best first. Example: [3, 12, 0, 7]`
+Return ONLY a JSON array of indices, best first, max 20. Example: [3,12,0,7]`
     }]
   });
 
   try {
     const raw = message.content[0].text.trim();
-    // Extract JSON array even if there's surrounding text
     const match = raw.match(/\[[\d,\s]+\]/);
     const indices = JSON.parse(match ? match[0] : raw);
     return indices.map(i => pool[i]).filter(Boolean);
@@ -327,13 +317,13 @@ export async function POST(request) {
     let fullText = pdfKeywords ? `${briefText}\n\n--- MOODBOARD NOTES ---\n${pdfKeywords}` : briefText;
     if (refineFeedback) fullText += `\n\n--- USER REFINEMENT FEEDBACK ---\n${refineFeedback}`;
 
-    // Run Claude brief parse AND catalog load simultaneously to save ~2 seconds
+    // Run Claude brief parse AND catalog load simultaneously to save ~2-3 seconds
     let briefResult, raw;
     if (hasAnthropicKey) {
       [briefResult, raw] = await Promise.all([
         parseBriefWithClaude(fullText).catch(e => {
           console.warn('Claude brief parse failed, falling back:', e.message);
-          return null; // will fall back to regex below
+          return null;
         }),
         store.get('records', { type: 'text' }),
       ]);
@@ -422,7 +412,7 @@ export async function POST(request) {
       }
     }
 
-    // ── LLM re-ranking (if API key available) ─────────────────────────────────
+    // ── LLM re-ranking: fast pass over top 25 to stay within 10s limit ───────────
     let finalResults;
     if (hasAnthropicKey && deduped.length >= 5) {
       try {
