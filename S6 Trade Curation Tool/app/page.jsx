@@ -376,7 +376,7 @@ export default function HomePage() {
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <div className="text-base font-semibold text-gray-900">{brief.projectName || '—'}</div>
+                <div className="text-base font-semibold text-gray-900">{brief.projectName || '—'}|/div>
                 <div className="text-sm text-gray-500 capitalize">{brief.projectType?.replace('_', ' ')}</div>
                 {brief.keyThemes?.length > 0 && (
                   <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' · ')}"</div>
