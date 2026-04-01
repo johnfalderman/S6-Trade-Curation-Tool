@@ -13,38 +13,57 @@ Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm
 
 function ArtworkCard({ item, size = 'md', pinned = false }) {
   const [imgError, setImgError] = useState(false)
+  const [showReason, setShowReason] = useState(false)
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
+  const imgSrc = item.image_url?.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url
+  const prodUrl = item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url
+
   return (
     <div className={`card group flex flex-col ${pinned ? 'ring-2 ring-blue-400' : ''}`}>
       {pinned && (
-        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">📌 Pinned</div>
+        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">ð Pinned</div>
       )}
-      <div className={`bg-gray-100 overflow-hidden ${imgSize}`}>
-        {item.image_url && !imgError ? (
-          <img
-            src={item.image_url.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url}
-            alt={item.image_alt || item.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            referrerPolicy="no-referrer"
-            onError={() => setImgError(true)}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs text-center px-2">
-            {item.title}
-          </div>
-        )}
-      </div>
+      <a href={prodUrl} target="_blank" rel="noopener noreferrer" className="block">
+        <div className={`bg-gray-100 overflow-hidden ${imgSize} relative`}>
+          {item.image_url && !imgError ? (
+            <img
+              src={imgSrc}
+              alt={item.image_alt || item.title}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              referrerPolicy="no-referrer"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs text-center px-2">
+              {item.title}
+            </div>
+          )}
+        </div>
+      </a>
       <div className="p-3 flex flex-col gap-1 flex-1">
         <div className="text-sm font-medium text-gray-800 leading-tight line-clamp-2">{item.title}</div>
         <div className="text-xs text-gray-400">{item.source_collection}</div>
+        {item.reason && (
+          <div className="mt-1">
+            <button
+              onClick={() => setShowReason(v => !v)}
+              className="text-xs text-indigo-500 hover:text-indigo-700"
+            >
+              {showReason ? 'â² Hide why' : 'â¾ Why this fits'}
+            </button>
+            {showReason && (
+              <div className="mt-1 text-xs text-gray-500 italic leading-snug">{item.reason}</div>
+            )}
+          </div>
+        )}
         <div className="mt-auto pt-2">
           <a
-            href={item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url}
+            href={prodUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-red-600 hover:text-red-800 font-medium"
           >
-            View on Society6 →
+            View on Society6 â
           </a>
         </div>
       </div>
@@ -80,6 +99,19 @@ function BriefBadge({ label, values, danger = false }) {
   )
 }
 
+function ConversationBubble({ turn, index }) {
+  return (
+    <div className="flex gap-2 items-start">
+      <div className="w-5 h-5 rounded-full bg-gray-700 text-white text-xs flex items-center justify-center shrink-0 mt-0.5">
+        {index + 1}
+      </div>
+      <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 flex-1">
+        "{turn}"
+      </div>
+    </div>
+  )
+}
+
 export default function HomePage() {
   const [briefText, setBriefText] = useState('')
   const [moodboardUrl, setMoodboardUrl] = useState('')
@@ -93,7 +125,7 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState('primary')
   const fileInputRef = useRef(null)
 
-  // Refine flow
+  // Conversation/refine state
   const [refineFeedback, setRefineFeedback] = useState('')
   const [refineHistory, setRefineHistory] = useState([])
   const [refineLoading, setRefineLoading] = useState(false)
@@ -102,21 +134,22 @@ export default function HomePage() {
   const [pinnedUrlInput, setPinnedUrlInput] = useState('')
   const [pinnedUrls, setPinnedUrls] = useState([])
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, pinnedUrls }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
       fd.append('brief', brief)
       fd.append('moodboardUrl', moodboardUrl || '')
       fd.append('moodboard', moodboardFile)
-      if (refineFeedback) fd.append('refineFeedback', refineFeedback)
-      if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
+      if (refineFeedback)    fd.append('refineFeedback',  refineFeedback)
+      if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
+      if (pinnedUrls?.length)     fd.append('pinnedUrls',     JSON.stringify(pinnedUrls))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, pinnedUrls }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles: prevItemTitles || [], pinnedUrls: pinnedUrls || [] }),
       })
     }
     const data = await res.json()
@@ -150,11 +183,18 @@ export default function HomePage() {
     setSlidesResult(null)
     setSlidesError(null)
     try {
+      // Pass current results as context so Claude knows what was shown
+      const prevItemTitles = [
+        ...(results.primary || []).map(r => r.title),
+        ...(results.accent  || []).map(r => r.title),
+      ].filter(Boolean)
+
       const data = await callRecommend({
         brief: briefText,
         moodboardUrl,
         moodboardFile,
         refineFeedback,
+        prevItemTitles,
         pinnedUrls,
       })
       setRefineHistory(h => [...h, refineFeedback])
@@ -194,21 +234,29 @@ export default function HomePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          brief: results.brief,
-          primary: results.primary,
-          accent: results.accent,
+          brief:          results.brief,
+          primary:        results.primary,
+          accent:         results.accent,
           galleryWallSets: results.galleryWallSets,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Unknown error')
-      const link = document.createElement('a')
-      link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
-      link.download = data.filename || 'S6-Curation.pptx'
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      setSlidesResult({ filename: data.filename })
+
+      if (data.pptxBase64) {
+        // Download as .pptx file
+        const link = document.createElement('a')
+        link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
+        link.download = data.filename || 'S6-Curation.pptx'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        setSlidesResult({ filename: data.filename })
+      } else if (data.deckUrl) {
+        // Google Slides fallback â open in new tab
+        window.open(data.deckUrl, '_blank')
+        setSlidesResult({ deckUrl: data.deckUrl })
+      }
     } catch (err) {
       setSlidesError(err.message)
     } finally {
@@ -236,14 +284,14 @@ export default function HomePage() {
   const brief = results?.brief
   const tabCounts = {
     primary: results?.primary?.length || 0,
-    accent: results?.accent?.length || 0,
+    accent:  results?.accent?.length  || 0,
     gallery: results?.galleryWallSets?.length || 0,
   }
 
   return (
     <div className="max-w-4xl mx-auto">
 
-      {/* ── Intake Form ── */}
+      {/* ââ Intake Form ââ */}
       <div className="mb-10">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">New Curation Request</h1>
         <p className="text-gray-500 text-sm mb-6">Paste a Jotform submission below to generate wall art recommendations.</p>
@@ -307,7 +355,7 @@ export default function HomePage() {
           {/* Pinned items */}
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1.5">
-              Pin Specific Items <span className="text-gray-400 font-normal">(optional — paste Society6 product URLs to force-include)</span>
+              Pin Specific Items <span className="text-gray-400 font-normal">(optional â paste Society6 product URLs to force-include)</span>
             </label>
             <div className="flex gap-2">
               <input
@@ -326,9 +374,9 @@ export default function HomePage() {
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
                   <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
-                    <span className="text-blue-500">📌</span>
+                    <span className="text-blue-500">ð</span>
                     <span className="flex-1 truncate">{url}</span>
-                    <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">✕</button>
+                    <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">â</button>
                   </div>
                 ))}
               </div>
@@ -341,11 +389,12 @@ export default function HomePage() {
 
           <div className="flex items-center gap-3">
             <button type="submit" disabled={loading || !briefText.trim()} className="btn-primary">
-              {loading ? 'Generating…' : 'Generate Recommendations'}
+              {loading ? 'Generatingâ¦' : 'Generate Recommendations'}
             </button>
             {results && (
               <span className="text-sm text-gray-500">
-                {results.totalScored} items scored · catalog of {results.catalogSize}
+                {results.totalScored?.toLocaleString()} scored Â· catalog of {results.catalogSize?.toLocaleString()}
+                {results.aiPowered && <span className="ml-2 text-green-600">â¦ AI-curated</span>}
               </span>
             )}
           </div>
@@ -353,7 +402,7 @@ export default function HomePage() {
         </form>
       </div>
 
-      {/* ── Results ── */}
+      {/* ââ Results ââ */}
       {results && (
         <div id="results-section" className="space-y-8">
 
@@ -361,41 +410,54 @@ export default function HomePage() {
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="section-header mb-0">Parsed Brief</h2>
-              {brief.parsedBy === 'claude' && (
-                <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">✓ AI-parsed</span>
-              )}
+              <div className="flex gap-2">
+                {results.aiPowered && (
+                  <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">â¦ AI-curated</span>
+                )}
+                {brief.parsedBy === 'claude' && (
+                  <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">â AI-parsed</span>
+                )}
+              </div>
             </div>
+
+            {/* Conversation history */}
             {refineHistory.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-1.5">
-                {refineHistory.map((r, i) => (
-                  <span key={i} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded px-2 py-0.5">
-                    Refined: "{r}"
-                  </span>
+              <div className="mb-4 space-y-2">
+                <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">Refinement history</div>
+                {refineHistory.map((turn, i) => (
+                  <ConversationBubble key={i} turn={turn} index={i} />
                 ))}
               </div>
             )}
+
+            {brief.briefSummary && (
+              <div className="mb-3 text-sm text-gray-600 italic bg-gray-50 border border-gray-100 rounded-lg px-4 py-2.5">
+                "{brief.briefSummary}"
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <div className="text-base font-semibold text-gray-900">{brief.projectName || '—'}</div>
+                <div className="text-base font-semibold text-gray-900">{brief.projectName || 'â'}</div>
                 <div className="text-sm text-gray-500 capitalize">{brief.projectType?.replace('_', ' ')}</div>
                 {brief.keyThemes?.length > 0 && (
-                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' · ')}"</div>
+                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' Â· ')}"</div>
                 )}
               </div>
               <div className="space-y-2">
-                <BriefBadge label="Style" values={brief.styleTags} />
+                <BriefBadge label="Style"   values={brief.styleTags} />
                 <BriefBadge label="Palette" values={brief.paletteTags} />
-                {brief.avoidTags?.length > 0 && <BriefBadge label="Avoid" values={brief.avoidTags} danger />}
-                {brief.rooms?.length > 0 && <BriefBadge label="Spaces" values={brief.rooms} />}
+                {brief.avoidTags?.length > 0  && <BriefBadge label="Avoid" values={brief.avoidTags} danger />}
+                {brief.rooms?.length > 0       && <BriefBadge label="Spaces" values={brief.rooms} />}
               </div>
             </div>
             <div className="flex gap-4 text-sm text-gray-500 mt-3">
-              {brief.galleryWall && <span>✓ Gallery wall requested</span>}
-              {brief.pieceCount && <span>Target: {brief.pieceCount} pieces</span>}
+              {brief.galleryWall       && <span>â Gallery wall requested</span>}
+              {brief.targetPieceCount  && <span>Target: {brief.targetPieceCount} pieces</span>}
             </div>
             {brief.moodboardNote && (
               <div className="mt-3 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-                📎 {brief.moodboardNote}
+                ð {brief.moodboardNote}
               </div>
             )}
           </div>
@@ -405,7 +467,7 @@ export default function HomePage() {
             <div className="flex border-b border-gray-200 mb-6 gap-1">
               {[
                 { key: 'primary', label: 'Primary Collection', count: tabCounts.primary },
-                { key: 'accent', label: 'Accent & Alternates', count: tabCounts.accent },
+                { key: 'accent',  label: 'Accent & Alternates', count: tabCounts.accent },
                 brief.galleryWall && { key: 'gallery', label: 'Gallery Wall Sets', count: tabCounts.gallery },
               ].filter(Boolean).map(tab => (
                 <button
@@ -422,7 +484,11 @@ export default function HomePage() {
 
             {activeTab === 'primary' && (
               <div>
-                <p className="text-sm text-gray-500 mb-4">Top {results.primary.length} pieces for this brief.</p>
+                <p className="text-sm text-gray-500 mb-4">
+                  {results.aiPowered
+                    ? `Claude selected these ${results.primary.length} pieces for this brief. Click "Why this fits" on any card.`
+                    : `Top ${results.primary.length} pieces for this brief.`}
+                </p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.primary.map(item => (
                     <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} />
@@ -433,10 +499,10 @@ export default function HomePage() {
 
             {activeTab === 'accent' && (
               <div>
-                <p className="text-sm text-gray-500 mb-4">Accent pieces and alternates.</p>
+                <p className="text-sm text-gray-500 mb-4">Additional accent pieces and alternates.</p>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.accent.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} />
+                    <ArtworkCard key={item.product_url} item={item} />
                   ))}
                 </div>
               </div>
@@ -454,11 +520,13 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* ── Refine results ── */}
+          {/* ââ Refine results ââ */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-900 mb-1">Refine These Results</h3>
             <p className="text-xs text-gray-500 mb-3">
-              Tell Claude what to adjust — e.g. "more jazz and vintage, fewer landscapes" or "go darker, nothing with warm colors"
+              Tell Claude what to adjust. It knows what was already shown and will return different pieces.
+              <br />
+              <span className="text-gray-400">e.g. "more abstract, fewer landscapes" Â· "go darker and moodier" Â· "show me more coastal options" Â· "nothing with text or typography"</span>
             </p>
             <div className="flex gap-2">
               <input
@@ -466,7 +534,7 @@ export default function HomePage() {
                 value={refineFeedback}
                 onChange={e => setRefineFeedback(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleRefine()}
-                placeholder="What would you like to change about these results?"
+                placeholder="What would you like to change?"
                 className="flex-1 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
               />
               <button
@@ -474,7 +542,7 @@ export default function HomePage() {
                 disabled={refineLoading || !refineFeedback.trim()}
                 className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
               >
-                {refineLoading ? 'Refining…' : 'Apply'}
+                {refineLoading ? 'Refiningâ¦' : 'Apply'}
               </button>
             </div>
           </div>
@@ -484,17 +552,25 @@ export default function HomePage() {
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div>
                 <div className="font-semibold text-gray-900 mb-1">Generate PowerPoint Deck</div>
-                <p className="text-sm text-gray-500">Downloads a .pptx file with cover, brief summary, primary collection, accents, and gallery wall sets.</p>
+                <p className="text-sm text-gray-500">
+                  Downloads a .pptx file with all artwork slides. Each image and "View on Society6" link is clickable and goes directly to the product page.
+                </p>
               </div>
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent shrink-0">
-                {slidesLoading ? 'Building deck…' : 'Generate Slides Deck'}
+                {slidesLoading ? 'Building deckâ¦' : 'Download Slides Deck'}
               </button>
             </div>
 
             {slidesResult && (
               <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-green-800 mb-2">✓ Deck downloaded!</div>
-                <div className="text-sm text-green-700">{slidesResult.filename} — check your Downloads folder.</div>
+                <div className="text-sm font-medium text-green-800 mb-1">â Deck ready!</div>
+                {slidesResult.filename && (
+                  <div className="text-sm text-green-700">{slidesResult.filename} â check your Downloads folder.</div>
+                )}
+                {slidesResult.deckUrl && (
+                  <a href={slidesResult.deckUrl} target="_blank" rel="noopener noreferrer"
+                     className="text-sm text-blue-600 underline">Open in Google Slides â</a>
+                )}
               </div>
             )}
 
