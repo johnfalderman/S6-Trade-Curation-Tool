@@ -72,7 +72,7 @@ function GalleryWallSet({ gwSet }) {
         ))}
       </div>
     </div>
-    )
+  )
 }
 
 function BriefBadge({ label, values, danger = false }) {
@@ -133,7 +133,7 @@ export default function HomePage() {
   // Provider / deck settings
   const [providerName, setProviderName] = useState('')
   const [providerEmail, setProviderEmail] = useState('')
-  const [providerPhone, setProviderPhone] 4 useState('')
+  const [providerPhone, setProviderPhone] = useState('')
   const [imagesPerSlide, setImagesPerSlide] = useState(8)
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, pinnedUrls }) {
@@ -241,7 +241,7 @@ export default function HomePage() {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Unknown erroerror')
+      if (!res.ok) throw new Error(data.error || 'Unknown error')
       const link = document.createElement('a')
       link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
       link.download = data.filename || 'S6-Curation.pptx'
@@ -365,7 +365,7 @@ export default function HomePage() {
             {pinnedUrls.length > 0 && (
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
-  &§          <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
+                  <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
                     <span className="text-blue-500">[pin]</span>
                     <span className="flex-1 truncate">{url}</span>
                     <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">x</button>
@@ -387,7 +387,7 @@ export default function HomePage() {
               <span className="text-sm text-gray-500">
                 {results.totalScored} items scored * catalog of {results.catalogSize}
               </span>
-             )}
+            )}
           </div>
 
         </form>
@@ -430,7 +430,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex gap-4 text-sm text-gray-500 mt-3">
-              {brief.galleryWall && <span>OK Gallery wall requested</span>}
+     0        {brief.galleryWall && <span>OK Gallery wall requested</span>}
               {brief.pieceCount && <span>Target: {brief.pieceCount} pieces</span>}
             </div>
             {brief.moodboardNote && (
