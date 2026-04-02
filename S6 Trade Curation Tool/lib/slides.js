@@ -1,6 +1,6 @@
 import PptxGenJS from 'pptxgenjs';
 
-// ── Palette ──────────────────────────────────────────────────────────────────
+// ── Palette ────────────────────────────────────────────────────────────────────────────
 const C = {
   cream:   'FAF8F0',   // warm off-white background
   dark:    '1C1C1E',   // near-black text
@@ -11,7 +11,7 @@ const C = {
   darkBar: '1C1C1E',   // footer bar on cover
 };
 
-// ── Image fetching ────────────────────────────────────────────────────────────
+// ── Image fetching ──────────────────────────────────────────────────────────────────────────
 async function fetchImg(url) {
   if (!url) return null;
   try {
@@ -43,7 +43,7 @@ function safeName(str) {
   return (str || 'S6-Curation').replace(/[^a-zA-Z0-9\s-]/g, '').trim();
 }
 
-// ── Cover slide ───────────────────────────────────────────────────────────────
+// ── Cover slide ───────────────────────────────────────────────────────────────────────────────────
 // Layout (top → bottom):
 //   – Client name (large, prominent) + location underneath
 //   – Project name (medium, styled) below client block
@@ -52,41 +52,58 @@ function addCoverSlide(pres, brief, providerInfo = {}) {
   const sl = pres.addSlide();
   sl.background = { color: C.cream };
 
-  const clientName  = brief.clientName  || brief.projectName || 'Trade Curation';
-  const location    = brief.location    || '';
-  const projectName = brief.projectName || '';
+  // ── Derive display fields ──────────────────────────────────────────────────────────────────────────────
+  // clientName: use clientName → projectName → first keyTheme → "Trade Curation"
+  const firstTheme   = (brief.keyThemes || [])[0] || (brief.styleTags || [])[0] || '';
+  const clientName   = brief.clientName || brief.projectName || firstTheme || 'Trade Curation';
+  const location     = brief.location   || '';
 
-  // ── Client name — largest, top-center ──────────────────────────────────────
+  // Project label: project name (if different from client), else project type
+  let projectLabel = '';
+  if (brief.projectName && brief.projectName !== clientName) {
+    projectLabel = brief.projectName;
+  } else if (brief.projectType && brief.projectType !== 'other') {
+    projectLabel = brief.projectType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) + ' Curation';
+  }
+
+  // Date — prefer brief.date if set, otherwise today
+  const today    = new Date();  const dateStr  = brief.date || today.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  // ── Client name — largest, top-center ──────────────────────────────────────────────────────────────────────
   sl.addText(clientName, {
-    x: 0.7, y: 0.85, w: 8.6, h: 1.5,
+    x: 0.7, y: 0.75, w: 8.6, h: 1.5,
     fontSize: 52, fontFace: 'Georgia', color: C.dark,
     bold: false, align: 'center', valign: 'middle',
   });
 
-  // ── Location — below client name ────────────────────────────────────────────
+  // ── Location — below client name ───────────────────────────────────────────────────────────────────────
+  let lineY = 2.38;
   if (location) {
     sl.addText(location, {
-      x: 0.7, y: 2.45, w: 8.6, h: 0.42,
+      x: 0.7, y: lineY, w: 8.6, h: 0.42,
       fontSize: 18, fontFace: 'Arial', color: C.mid,
       align: 'center',
     });
+    lineY += 0.52;
   }
-
-  // ── Project name / type — smaller, below location ───────────────────────────
-  const projectLabel = projectName && projectName !== clientName
-    ? projectName
-    : (brief.projectType
-        ? brief.projectType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) + ' Curation'
-        : '');
+  // ── Project label (type/name) ───────────────────────────────────────────────────────────────────────
   if (projectLabel) {
     sl.addText(projectLabel, {
-      x: 0.7, y: location ? 3.0 : 2.7, w: 8.6, h: 0.42,
+      x: 0.7, y: lineY, w: 8.6, h: 0.38,
       fontSize: 15, fontFace: 'Arial', color: C.muted,
       align: 'center',
     });
+    lineY += 0.46;
   }
 
-  // ── Dark footer bar ─────────────────────────────────────────────────────────
+  // ── Date ──────────────────────────────────────────────────────────────────────────────────────
+  sl.addText(dateStr, {
+    x: 0.7, y: lineY, w: 8.6, h: 0.36,
+    fontSize: 13, fontFace: 'Arial', color: C.muted,
+    align: 'center',
+  });
+
+  // ── Dark footer bar ─────────────────────────────────────────────────────────────────────────────────
   sl.addShape('rect', {
     x: 0, y: 4.625, w: 10, h: 1.0,
     fill: { color: C.darkBar }, line: { color: C.darkBar },
@@ -112,7 +129,7 @@ function addCoverSlide(pres, brief, providerInfo = {}) {
   }
 }
 
-// ── Section intro slide ───────────────────────────────────────────────────────
+// ── Section intro slide ───────────────────────────────────────────────────────────────────────────────
 // Style: cream bg, large left-aligned serif title, søciety6 bottom-right
 function addSectionSlide(pres, title, subtitle) {
   const sl = pres.addSlide();
@@ -140,7 +157,7 @@ function addSectionSlide(pres, title, subtitle) {
   });
 }
 
-// ── Grid slide ────────────────────────────────────────────────────────────────
+// ── Grid slide ────────────────────────────────────────────────────────────────────────────────────
 // 6 columns × 2 rows = up to 12 items per slide
 // Each item: white frame + mat effect + embedded image + clickable link
 function addGridSlide(pres, items, imgDataArr, categoryLabel) {
@@ -210,15 +227,15 @@ function addGridSlide(pres, items, imgDataArr, categoryLabel) {
         x: imgX, y: imgY, w: imgW, h: imgH,
         sizing: { type: 'contain', w: imgW, h: imgH },
       });
-      // pptxgenjs silently drops hyperlink when sizing is set on addImage,
-      // so we overlay a transparent text element to carry the clickable link.
-      sl.addText('', {
+      // pptxgenjs silently drops hyperlink when sizing is set on addImage.
+      // Overlay a single-space text element — pptxgenjs requires a non-empty
+      // string to generate a <a:r> text run, which is what carries the hyperlink XML.
+      sl.addText(' ', {
         x: imgX, y: imgY, w: imgW, h: imgH,
         hyperlink: { url: productUrl, tooltip: 'View on Society6' },
-        fontSize: 1, color: 'FFFFFF',
+        fontSize: 1, color: 'FFFFFF00',
       });
-    } else {
-      // Fallback: light gray placeholder + title text
+    } else {      // Fallback: light gray placeholder + title text
       sl.addShape('rect', {
         x: imgX, y: imgY, w: imgW, h: imgH,
         fill: { color: 'F0EEEA' }, line: { color: 'E0DDD8', width: 0.3 },
@@ -228,17 +245,17 @@ function addGridSlide(pres, items, imgDataArr, categoryLabel) {
         fontSize: 6.5, fontFace: 'Arial', color: C.mid,
         align: 'center', wrap: true,
       });
-      // Still make it clickable: overlay a transparent text element (shapes don't support hyperlinks in pptxgenjs)
-      sl.addText('', {
+      // Same non-empty-string workaround for placeholder case
+      sl.addText(' ', {
         x: imgX, y: imgY, w: imgW, h: imgH,
-        hyperlink: { url: productUrl },
-        fontSize: 1, color: 'FFFFFF',
+        hyperlink: { url: productUrl, tooltip: 'View on Society6' },
+        fontSize: 1, color: 'FFFFFF00',
       });
     }
   });
 }
 
-// ── createSlidesDeck ─────────────────────────────────────────────────────────
+// ── createSlidesDeck ────────────────────────────────────────────────────────────────────────────────
 export async function createSlidesDeck({ brief = {}, primary = [], accent = [], galleryWallSets = [], providerInfo = {} } = {}) {
   try {
 
