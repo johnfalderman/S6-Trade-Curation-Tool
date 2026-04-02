@@ -17,8 +17,8 @@ ${text}
 
 Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
 {
-  "projectName": "string or empty",
-  "clientName": "the name of the client, property, or business (look for fields like Client Name, Property Name, Business Name, Company, or the primary named entity)",
+    "projectName": "look for 'Design Project', 'Design Project Name', or 'Project Name' label. Use value exactly, or empty string.",
+    "clientName": "look for 'Company Name', 'Client Name', 'Property Name', 'Business Name', or 'Company' label. Use value exactly.",
   "location": "city and state/country (look for Location, City, Address, or any geographic reference)",
   "projectType": "hotel|restaurant|vacation_rental|office|other",
   "styleTags": ["art style keywords â e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic"],
@@ -107,7 +107,7 @@ function parseBriefFallback(text) {
     return '';
   };
 
-  const projectName = get('Project Name') || get('Name') || get('Project');
+  const projectName = get('Design Project') || get('Design Project Name') || get('Project Name') || get('Name') || get('Project');
   const projectTypeLine = (get('Project Type') || get('Type') || '').toLowerCase();
   let projectType = 'other';
   if (/restaurant|dining|cafe|bar/.test(projectTypeLine)) projectType = 'restaurant';
