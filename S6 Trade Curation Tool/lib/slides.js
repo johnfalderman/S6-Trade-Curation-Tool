@@ -11,21 +11,42 @@ const C = {
   darkBar: '1C1C1E',   // footer bar on cover
 };
 
+// ── Image dimensions (PNG + JPEG header parsing, no external deps) ─────
+function getImageDims(buf) {
+  if (!buf || buf.length < 24) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50) {                    // PNG
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+  }
+  if (buf[0] === 0xFF && buf[1] === 0xD8) {                    // JPEG
+    let i = 2;
+    while (i + 4 < buf.length) {
+      if (buf[i] !== 0xFF) break;
+      const m = buf[i + 1];
+      if (m >= 0xC0 && m <= 0xC3)
+        return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+      i += 2 + buf.readUInt16BE(i + 2);
+    }
+  }
+  return null;
+}
+
 // ── Image fetching ──────────────────────────────────────────────────────────────────────────
 async function fetchImg(url) {
-  if (!url) return null;
+  if (!url) return { data: null, aspect: 1 };
   try {
     const full = url.startsWith('/') ? 'https://society6.com' + url : url;
     const res = await fetch(full, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; S6TradeBot/1.0)' },
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
+    if (!res.ok) return { data: null, aspect: 1 };
+    const buf = Buffer.from(await res.arrayBuffer());
+    const dims = getImageDims(buf);
+    const aspect = dims ? (dims.w / dims.h) : 1;
     const mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0];
-    return 'data:' + mime + ';base64,' + Buffer.from(buf).toString('base64');
+    return { data: 'data:' + mime + ';base64,' + buf.toString('base64'), aspect };
   } catch {
-    return null;
+    return { data: null, aspect: 1 };
   }
 }
 
@@ -160,7 +181,7 @@ function addSectionSlide(pres, title, subtitle) {
 // ── Grid slide ────────────────────────────────────────────────────────────────────────────────────
 // 6 columns × 2 rows = up to 12 items per slide
 // Each item: white frame + mat effect + embedded image + clickable link
-function addGridSlide(pres, items, imgDataArr, categoryLabel) {
+function addGridSlide(pres, items, imgInfoArr, categoryLabel) {
   const sl = pres.addSlide();
   sl.background = { color: C.gridBg };
 
@@ -200,8 +221,21 @@ function addGridSlide(pres, items, imgDataArr, categoryLabel) {
     const fx  = marginL + col * (frameW + gapX);
     const fy  = marginT + row * (frameH + gapY);
 
-    const imgData    = imgDataArr[idx] || null;
+    const imgInfo   = imgInfoArr[idx] || {};
     const productUrl = fullUrl(item.product_url);
+
+    // Contain-fit: calculate dimensions preserving aspect ratio.
+    // We do NOT use pptxgenjs 'sizing' because it silently drops the hyperlink.
+    const aspect = imgInfo.aspect || 1;
+    const containerAspect = imgW / imgH;
+    let drawW, drawH, drawX, drawY;
+    if (aspect >= containerAspect) {
+      drawW = imgW;  drawH = imgW / aspect;
+      drawX = imgX;  drawY = imgY + (imgH - drawH) / 2;
+    } else {
+      drawH = imgH;  drawW = imgH * aspect;
+      drawY = imgY;  drawX = imgX + (imgW - drawW) / 2;
+    }
 
     // White frame background with soft shadow
     sl.addShape('rect', {
@@ -221,35 +255,22 @@ function addGridSlide(pres, items, imgDataArr, categoryLabel) {
     const imgW = frameW - matSide * 2;
     const imgH = frameH - matH - matBot;
 
-    if (imgData) {
+    if (imgInfo.data) {
       sl.addImage({
-        data: imgData,
-        x: imgX, y: imgY, w: imgW, h: imgH,
-        sizing: { type: 'contain', w: imgW, h: imgH },
-      });
-      // pptxgenjs silently drops hyperlink when sizing is set on addImage.
-      // Overlay a single-space text element — pptxgenjs requires a non-empty
-      // string to generate a <a:r> text run, which is what carries the hyperlink XML.
-      sl.addText(' ', {
-        x: imgX, y: imgY, w: imgW, h: imgH,
+        data: imgInfo.data,
+        x: drawX, y: drawY, w: drawW, h: drawH,
         hyperlink: { url: productUrl, tooltip: 'View on Society6' },
-        fontSize: 1, color: 'FFFFFF00',
       });
     } else {      // Fallback: light gray placeholder + title text
       sl.addShape('rect', {
         x: imgX, y: imgY, w: imgW, h: imgH,
         fill: { color: 'F0EEEA' }, line: { color: 'E0DDD8', width: 0.3 },
       });
-      sl.addText(item.title || '', {
+      sl.addText(item.title || 'View on Society6', {
         x: imgX + 0.04, y: imgY + imgH * 0.3, w: imgW - 0.08, h: imgH * 0.4,
         fontSize: 6.5, fontFace: 'Arial', color: C.mid,
         align: 'center', wrap: true,
-      });
-      // Same non-empty-string workaround for placeholder case
-      sl.addText(' ', {
-        x: imgX, y: imgY, w: imgW, h: imgH,
         hyperlink: { url: productUrl, tooltip: 'View on Society6' },
-        fontSize: 1, color: 'FFFFFF00',
       });
     }
   });
