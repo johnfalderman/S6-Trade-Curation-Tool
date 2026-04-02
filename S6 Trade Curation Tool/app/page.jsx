@@ -135,6 +135,11 @@ export default function HomePage() {
   const [providerEmail, setProviderEmail] = useState('')
   const [providerPhone, setProviderPhone] = useState('')
   const [imagesPerSlide, setImagesPerSlide] = useState(8)
+  // Cover slide fields — override what the brief parser extracts
+  const [deckClientName, setDeckClientName] = useState('')
+  const [deckProjectName, setDeckProjectName] = useState('')
+  const [deckLocation, setDeckLocation] = useState('')
+  const [deckDate, setDeckDate] = useState('')
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, pinnedUrls }) {
     let res
@@ -230,7 +235,13 @@ export default function HomePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          brief: results.brief,
+          brief: {
+            ...results.brief,
+            ...(deckClientName && { clientName: deckClientName }),
+            ...(deckProjectName && { projectName: deckProjectName }),
+            ...(deckLocation && { location: deckLocation }),
+            ...(deckDate && { date: deckDate }),
+          },
           primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
           accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
           galleryWallSets: (results.galleryWallSets || []).map(s => ({
@@ -362,6 +373,7 @@ export default function HomePage() {
                 Add
               </button>
             </div>
+            <p className="text-xs text-amber-600 mt-2">⚠ After pinning a URL, click <strong>Generate Recommendations</strong> again — pinned items are included in the next run.</p>
             {pinnedUrls.length > 0 && (
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
@@ -539,6 +551,30 @@ export default function HomePage() {
             </div>
             <p className="text-sm text-gray-500 mb-4">Downloads a .pptx file. Deselect individual items above to exclude them.</p>
 
+            {/* Cover slide info */}
+            <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Cover Slide Info</p>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Client / Company Name</label>
+                  <input type="text" value={deckClientName} onChange={e => setDeckClientName(e.target.value)} placeholder="e.g. The Roosevelt Hotel" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Project Name</label>
+                  <input type="text" value={deckProjectName} onChange={e => setDeckProjectName(e.target.value)} placeholder="e.g. Lobby Renovation" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Location</label>
+                  <input type="text" value={deckLocation} onChange={e => setDeckLocation(e.target.value)} placeholder="e.g. Nashville, TN" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
+                  <input type="text" value={deckDate} onChange={e => setDeckDate(e.target.value)} placeholder="e.g. April 2026" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+              </div>
+            </div>
             {/* Provider info */}
             <div className="grid grid-cols-3 gap-3 mb-3">
               <div>
