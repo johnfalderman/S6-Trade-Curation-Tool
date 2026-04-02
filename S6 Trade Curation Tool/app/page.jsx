@@ -11,13 +11,20 @@ Gallery Wall: Yes
 Target Pieces: 80
 Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm. Should feel elevated but approachable.`
 
-function ArtworkCard({ item, size = 'md', pinned = false }) {
+function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null }) {
   const [imgError, setImgError] = useState(false)
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
   return (
-    <div className={`card group flex flex-col ${pinned ? 'ring-2 ring-blue-400' : ''}`}>
+    <div className={`card group flex flex-col relative ${pinned ? 'ring-2 ring-blue-400' : ''} ${onToggle && !selected ? 'opacity-40' : ''}`}>
+      {onToggle && (
+        <button
+          onClick={e => { e.preventDefault(); onToggle(item.product_url) }}
+          className={`absolute top-1 right-1 z-10 w-5 h-5 rounded border-2 flex items-center justify-center text-xs font-bold transition-colors ${selected ? 'bg-gray-900 border-gray-900 text-white' : 'bg-white border-gray-400 text-gray-400'}`}
+          title={selected ? 'Deselect from deck' : 'Add to deck'}
+        >{selected ? 'x' : '+'}</button>
+      )}
       {pinned && (
-        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">ð Pinned</div>
+        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">[pin] Pinned</div>
       )}
       <div className={`bg-gray-100 overflow-hidden ${imgSize}`}>
         {item.image_url && !imgError ? (
@@ -44,7 +51,7 @@ function ArtworkCard({ item, size = 'md', pinned = false }) {
             rel="noopener noreferrer"
             className="text-xs text-red-600 hover:text-red-800 font-medium"
           >
-            View on Society6 â
+            View on Society6 ->
           </a>
         </div>
       </div>
@@ -102,6 +109,27 @@ export default function HomePage() {
   const [pinnedUrlInput, setPinnedUrlInput] = useState('')
   const [pinnedUrls, setPinnedUrls] = useState([])
 
+  // Item selection for deck
+  const [selectedItems, setSelectedItems] = useState(new Set())
+
+  function toggleItem(url) {
+    setSelectedItems(prev => {
+      const next = new Set(prev)
+      if (next.has(url)) next.delete(url)
+      else next.add(url)
+      return next
+    })
+  }
+
+  function initSelectedItems(data) {
+    const urls = new Set([
+      ...(data.primary || []).map(i => i.product_url),
+      ...(data.accent || []).map(i => i.product_url),
+      ...((data.galleryWallSets || []).flatMap(s => (s.items || []).map(i => i.product_url))),
+    ])
+    setSelectedItems(urls)
+  }
+
   // Provider / deck settings
   const [providerName, setProviderName] = useState('')
   const [providerEmail, setProviderEmail] = useState('')
@@ -141,6 +169,7 @@ export default function HomePage() {
     try {
       const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls })
       setResults(data)
+      initSelectedItems(data)
       setActiveTab('primary')
       setTimeout(() => document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' }), 100)
     } catch (err) {
@@ -166,6 +195,7 @@ export default function HomePage() {
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
       setResults(data)
+      initSelectedItems(data)
       setActiveTab('primary')
     } catch (err) {
       setError(err.message)
@@ -201,9 +231,11 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           brief: results.brief,
-          primary: results.primary,
-          accent: results.accent,
-          galleryWallSets: results.galleryWallSets,
+          primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
+          accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
+          galleryWallSets: (results.galleryWallSets || []).map(s => ({
+            ...s, items: (s.items || []).filter(i => selectedItems.has(i.product_url))
+          })).filter(s => s.items.length > 0),
           providerInfo: { name: providerName, email: providerEmail, phone: providerPhone },
           imagesPerSlide,
         }),
@@ -251,7 +283,7 @@ export default function HomePage() {
   return (
     <div className="max-w-4xl mx-auto">
 
-      {/* ââ Intake Form ââ */}
+      {/* -- Intake Form -- */}
       <div className="mb-10">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">New Curation Request</h1>
         <p className="text-gray-500 text-sm mb-6">Paste a Jotform submission below to generate wall art recommendations.</p>
@@ -299,7 +331,7 @@ export default function HomePage() {
                 </svg>
                 <span className="text-sm text-gray-700 flex-1 truncate">{moodboardFile.name}</span>
                 <span className="text-xs text-gray-400">{(moodboardFile.size / 1024).toFixed(0)} KB</span>
-                <button type="button" onClick={handleFileClear} className="text-xs text-gray-400 hover:text-red-500 underline shrink-0">Remove</button>
+                <button type="button" onClick={handleFileClear} className="text-xs text-gray-400 hover:text-red-500 underline shring-0">Remove</button>
               </div>
             ) : (
               <label className="flex items-center gap-3 border border-dashed border-gray-300 rounded-lg p-4 cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition-colors">
@@ -315,7 +347,7 @@ export default function HomePage() {
           {/* Pinned items */}
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1.5">
-              Pin Specific Items <span className="text-gray-400 font-normal">(optional â paste Society6 product URLs to force-include)</span>
+              Pin Specific Items <span className="text-gray-400 font-normal">(optional -- paste Society6 product URLs to force-include)</span>
             </label>
             <div className="flex gap-2">
               <input
@@ -334,9 +366,9 @@ export default function HomePage() {
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
                   <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
-                    <span className="text-blue-500">ð</span>
+                    <span className="text-blue-500">[pin]</span>
                     <span className="flex-1 truncate">{url}</span>
-                    <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">â</button>
+                    <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">x</button>
                   </div>
                 ))}
               </div>
@@ -349,11 +381,11 @@ export default function HomePage() {
 
           <div className="flex items-center gap-3">
             <button type="submit" disabled={loading || !briefText.trim()} className="btn-primary">
-              {loading ? 'Generatingâ¦' : 'Generate Recommendations'}
+              {loading ? 'Generating...' : 'Generate Recommendations'}
             </button>
             {results && (
               <span className="text-sm text-gray-500">
-                {results.totalScored} items scored Â· catalog of {results.catalogSize}
+                {results.totalScored} items scored * catalog of {results.catalogSize}
               </span>
             )}
           </div>
@@ -361,7 +393,7 @@ export default function HomePage() {
         </form>
       </div>
 
-      {/* ââ Results ââ */}
+      {/* -- Results -- */}
       {results && (
         <div id="results-section" className="space-y-8">
 
@@ -370,7 +402,7 @@ export default function HomePage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="section-header mb-0">Parsed Brief</h2>
               {brief.parsedBy === 'claude' && (
-                <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">â AI-parsed</span>
+                <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">OK AI-parsed</span>
               )}
             </div>
             {refineHistory.length > 0 && (
@@ -384,10 +416,10 @@ export default function HomePage() {
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <div className="text-base font-semibold text-gray-900">{brief.projectName || 'â'}</div>
+                <div className="text-base font-semibold text-gray-900">{brief.projectName || '--'}</div>
                 <div className="text-sm text-gray-500 capitalize">{brief.projectType?.replace('_', ' ')}</div>
                 {brief.keyThemes?.length > 0 && (
-                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' Â· ')}"</div>
+                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' * ')}"</div>
                 )}
               </div>
               <div className="space-y-2">
@@ -398,12 +430,12 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex gap-4 text-sm text-gray-500 mt-3">
-              {brief.galleryWall && <span>â Gallery wall requested</span>}
+              {brief.galleryWall && <span>OK Gallery wall requested</span>}
               {brief.pieceCount && <span>Target: {brief.pieceCount} pieces</span>}
             </div>
             {brief.moodboardNote && (
               <div className="mt-3 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-                ð {brief.moodboardNote}
+                [pdf] {brief.moodboardNote}
               </div>
             )}
           </div>
@@ -430,10 +462,16 @@ export default function HomePage() {
 
             {activeTab === 'primary' && (
               <div>
-                <p className="text-sm text-gray-500 mb-4">Top {results.primary.length} pieces for this brief.</p>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm text-gray-500">Top {results.primary.length} pieces. Click x to remove from deck.</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.primary.forEach(i => n.add(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Select all</button>
+                    <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.primary.forEach(i => n.delete(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Deselect all</button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.primary.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} />
                   ))}
                 </div>
               </div>
@@ -441,10 +479,16 @@ export default function HomePage() {
 
             {activeTab === 'accent' && (
               <div>
-                <p className="text-sm text-gray-500 mb-4">Accent pieces and alternates.</p>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm text-gray-500">Accent pieces and alternates. Click x to remove from deck.</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.accent.forEach(i => n.add(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Select all</button>
+                    <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.accent.forEach(i => n.delete(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Deselect all</button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.accent.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} />
                   ))}
                 </div>
               </div>
@@ -462,11 +506,11 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* ââ Refine results ââ */}
+          {/* -- Refine results -- */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-900 mb-1">Refine These Results</h3>
             <p className="text-xs text-gray-500 mb-3">
-              Tell Claude what to adjust â e.g. "more jazz and vintage, fewer landscapes" or "go darker, nothing with warm colors"
+              Tell Claude what to adjust -- e.g. "more jazz and vintage, fewer landscapes" or "go darker, nothing with warm colors"
             </p>
             <div className="flex gap-2">
               <input
@@ -482,15 +526,18 @@ export default function HomePage() {
                 disabled={refineLoading || !refineFeedback.trim()}
                 className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
               >
-                {refineLoading ? 'Refiningâ¦' : 'Apply'}
+                {refineLoading ? 'Refining...' : 'Apply'}
               </button>
             </div>
           </div>
 
           {/* Generate Deck */}
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
-            <div className="font-semibold text-gray-900 mb-1">Generate PowerPoint Deck</div>
-            <p className="text-sm text-gray-500 mb-4">Downloads a .pptx file with cover, brief summary, primary collection, accents, and gallery wall sets.</p>
+            <div className="flex items-center justify-between mb-1">
+              <div className="font-semibold text-gray-900">Generate PowerPoint Deck</div>
+              <span className="text-xs text-gray-500">{selectedItems.size} items selected for deck</span>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">Downloads a .pptx file. Deselect individual items above to exclude them.</p>
 
             {/* Provider info */}
             <div className="grid grid-cols-3 gap-3 mb-3">
@@ -541,14 +588,14 @@ export default function HomePage() {
                 </select>
               </div>
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent">
-                {slidesLoading ? 'Building deckâ¦' : 'Generate Slides Deck'}
+                {slidesLoading ? 'Building deck...' : 'Generate Slides Deck'}
               </button>
             </div>
 
             {slidesResult && (
               <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-green-800 mb-2">â Deck downloaded!</div>
-                <div className="text-sm text-green-700">{slidesResult.filename} â check your Downloads folder.</div>
+                <div className="text-sm font-medium text-green-800 mb-2">OK Deck downloaded!</div>
+                <div className="text-sm text-green-700">{slidesResult.filename} -- check your Downloads folder.</div>
               </div>
             )}
 
