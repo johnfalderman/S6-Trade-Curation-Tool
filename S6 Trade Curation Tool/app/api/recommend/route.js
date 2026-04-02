@@ -18,6 +18,8 @@ ${text}
 Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
 {
   "projectName": "string or empty",
+  "clientName": "the name of the client, property, or business (look for fields like Client Name, Property Name, Business Name, Company, or the primary named entity)",
+  "location": "city and state/country (look for Location, City, Address, or any geographic reference)",
   "projectType": "hotel|restaurant|vacation_rental|office|other",
   "styleTags": ["art style keywords â e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic"],
   "paletteTags": ["color keywords â e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red"],
@@ -155,7 +157,7 @@ function parseBriefFallback(text) {
 }
 
 function defaultBrief() {
-  return { projectName: '', projectType: 'other', styleTags: [], paletteTags: [], avoidTags: [],
+  return { projectName: '', clientName: '', location: '', projectType: 'other', styleTags: [], paletteTags: [], avoidTags: [],
            galleryWall: false, targetPieceCount: null, rooms: [], keyThemes: [], searchKeywords: [], briefSummary: '' };
 }
 
