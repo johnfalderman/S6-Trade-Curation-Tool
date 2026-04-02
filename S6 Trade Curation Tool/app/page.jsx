@@ -51,7 +51,7 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
             rel="noopener noreferrer"
             className="text-xs text-red-600 hover:text-red-800 font-medium"
           >
-            View on Society6 ->
+            View on Society6 {'->'}
           </a>
         </div>
       </div>
@@ -72,7 +72,7 @@ function GalleryWallSet({ gwSet }) {
         ))}
       </div>
     </div>
-  )
+    )
 }
 
 function BriefBadge({ label, values, danger = false }) {
@@ -133,7 +133,7 @@ export default function HomePage() {
   // Provider / deck settings
   const [providerName, setProviderName] = useState('')
   const [providerEmail, setProviderEmail] = useState('')
-  const [providerPhone, setProviderPhone] = useState('')
+  const [providerPhone, setProviderPhone] 4 useState('')
   const [imagesPerSlide, setImagesPerSlide] = useState(8)
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, pinnedUrls }) {
@@ -241,7 +241,7 @@ export default function HomePage() {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Unknown error')
+      if (!res.ok) throw new Error(data.error || 'Unknown erroerror')
       const link = document.createElement('a')
       link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
       link.download = data.filename || 'S6-Curation.pptx'
@@ -331,7 +331,7 @@ export default function HomePage() {
                 </svg>
                 <span className="text-sm text-gray-700 flex-1 truncate">{moodboardFile.name}</span>
                 <span className="text-xs text-gray-400">{(moodboardFile.size / 1024).toFixed(0)} KB</span>
-                <button type="button" onClick={handleFileClear} className="text-xs text-gray-400 hover:text-red-500 underline shring-0">Remove</button>
+                <button type="button" onClick={handleFileClear} className="text-xs text-gray-400 hover:text-red-500 underline shrink-0">Remove</button>
               </div>
             ) : (
               <label className="flex items-center gap-3 border border-dashed border-gray-300 rounded-lg p-4 cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition-colors">
@@ -365,7 +365,7 @@ export default function HomePage() {
             {pinnedUrls.length > 0 && (
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
-                  <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
+  &§          <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
                     <span className="text-blue-500">[pin]</span>
                     <span className="flex-1 truncate">{url}</span>
                     <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">x</button>
@@ -387,7 +387,7 @@ export default function HomePage() {
               <span className="text-sm text-gray-500">
                 {results.totalScored} items scored * catalog of {results.catalogSize}
               </span>
-            )}
+             )}
           </div>
 
         </form>
