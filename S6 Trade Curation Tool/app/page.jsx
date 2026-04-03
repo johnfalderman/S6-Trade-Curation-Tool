@@ -174,6 +174,9 @@ export default function HomePage() {
     try {
       const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls })
       setResults(data)
+      if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
+      if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
+      if (data.brief?.location) setDeckLocation(data.brief.location)
       initSelectedItems(data)
       setActiveTab('primary')
       setTimeout(() => document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' }), 100)
