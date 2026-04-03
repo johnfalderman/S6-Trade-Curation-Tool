@@ -100,7 +100,102 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
 
   // -- Brief summary slide -----------------------------------------------------
   const briefSlide = pptx.addSlide();
-  briefSlide.backgrounBÒ²6öÆ÷#¢%$Teô$rÓ°¢'&Ve6ÆFRæFEFWBu&ö¦V7B'&VbrÂ°¢¢ãRÂ¢ã2Âs¢"Â¢ãrÀ¢föçE6¦S¢#bÂ&öÆC¢G'VRÂ6öÆ÷#¢D$µõDUBÂföçDf6S¢t&ÂrÀ¢Ò° ¢6öç7B'&VdÆæW2Ò°¢²FWC¢6ÆVçC¢G¶'&Vbæ6ÆVçDæÖRÇÂuÇS#BwÖÂ÷Föç3¢²&öÆC¢G'VRÒÒÀ¢²FWC¢&ö¦V7C¢G¶'&Vbç&ö¦V7DæÖRÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢GS¢G¶'&Vbç&ö¦V7EGRÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢7GÆS¢G²'&Vbç7GÆUFw2ÇÂµÒæ¦öârÂrÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢ÆWGFS¢G²'&VbçÆWGFUFw2ÇÂµÒæ¦öârÂrÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢föC¢G²'&VbæföEFw2ÇÂµÒæ¦öârÂrÇÂuÇS#BwÖÂ÷Föç3¢²6öÆ÷#¢t3332rÒÒÀ¢²FWC¢&öö×3¢G²'&Vbç&öö×2ÇÂµÒæ¦öârÂrÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢vÆÆW'vÆÃ¢G¶'&VbævÆÆW'vÆÂòuW2r¢tæòwÖÂ÷Föç3¢·ÒÒÀ¢²FWC¢F&vWBV6W3¢G¶'&VbçF&vWEV6T6÷VçBÇÂuÇS#BwÖÂ÷Föç3¢·ÒÒÀ¢Ó° ¢6öç7B'&VeFWD'"Ò'&VdÆæW2æÖÆæRÓâ°¢FWC¢ÆæRçFWB²uÆârÀ¢÷Föç3¢²föçE6¦S¢BÂ6öÆ÷#¢ÆæRæ÷Föç2æ6öÆ÷"ÇÂD$µõDUBÂ&öÆC¢ÆæRæ÷Föç2æ&öÆBÇÂfÇ6RÂföçDf6S¢t&ÂrÐ¢Ò° ¢'&Ve6ÆFRæFEFWB'&VeFWD'"Â°¢¢ãRÂ¢ã"Âs¢bÂ¢RãRÂfÆvã¢wF÷rÀ¢Ò° ¢b'&Vbæ'&Ve7VÖÖ'°¢'&Ve6ÆFRæFEFWB"G¶'&Vbæ'&Ve7VÖÖ'Ò&Â°¢¢rÂ¢ã"Âs¢RãÂ¢2À¢föçE6¦S¢RÂ6öÆ÷#¢ÔEõDUBÂföçDf6S¢t&ÂrÂFÆ3¢G'VRÀ¢fÆvã¢wF÷rÀ¢Ò°¢Ð ¢òòÒÒ6V7FöâVFW"VÇW"ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÐ¢gVæ7FöâFE6V7FöäVFW"Æ&VÂÂ7V'FFÆR°¢6öç7B2ÒGæFE6ÆFR°¢2æ&6¶w&÷VæBÒ²6öÆ÷#¢4T5Dôåô$rÓ°¢2æFEFWBÆ&VÂÂ°¢¢ãbÂ¢"ãbÂs¢"Â¢À¢föçE6¦S¢3bÂ&öÆC¢G'VRÂ6öÆ÷#¢tDRÂföçDf6S¢t&ÂrÀ¢Ò°¢b7V'FFÆR°¢2æFEFWB7V'FFÆRÂ°¢¢ãbÂ¢2ãrÂs¢"Â¢ãRÀ¢föçE6¦S¢RÂ6öÆ÷#¢ÄtEôu$ÂföçDf6S¢t&ÂrÀ¢Ò°¢Ð¢Ð ¢òòÒÒ'Gv÷&²6ÆFRVÇW"ÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÐ¢7æ2gVæ7FöâFD'Gv÷&µ6ÆFRFVÒÂæFWÂ6V7FöäÆ&VÂ°¢6öç7B2ÒGæFE6ÆFR°¢2æ&6¶w&÷VæBÒ²6öÆ÷#¢ÄtEô$rÓ° ¢òò6öçfW'BFò'6öÇWFRU$Âöæ6RÇS#BæWfW"72&VÆFfRöV×GU$Ç2FòW&Ææ°¢6öç7B&öGV7DÆæ²Ò'5W&ÂFVÒç&öGV7E÷W&Â° ¢2æFEFWBG·6V7FöäÆ&VÇÒG¶æFW²ÖÂ°¢¢ã"Â¢ãRÂs¢"Â¢ã3RÀ¢föçE6¦S¢Â6öÆ÷#¢trÂföçDf6S¢t&ÂrÀ¢Ò° ¢òò'Gv÷&²ÖvRÇS#BfWF62&6ScB6òBv÷&·2â6W'fW&ÆW70¢6öç7BÖtæfòÒvBfWF6ÖrFVÒæÖvU÷W&Â°¢bÖtæfòbbÖtæfòæFF°¢6öç7BÖrÒ2ãS°¢6öç7BÖÒ2ãS°¢ÆWBG&urÒÖs°¢ÆWBG&tÒÖròÖtæfòæ7V7BÇÂ°¢bG&tâÖ²G&tÒÖ²G&urÒÖ¢Ötæfòæ7V7BÇÂ²Ð¢6öç7BG&uÒã2²ÖrÒG&urò#°¢6öç7BG&uÒãb²ÖÒG&tò#° ¢6öç7BÖt÷G2Ò²FF¢ÖtæfòæFFÂ¢G&uÂ¢G&uÂs¢G&urÂ¢G&tÓ°¢b&öGV7DÆæ²Öt÷G2æW&Ææ²Ò²W&Ã¢&öGV7DÆæ²ÂFööÇF¢ufWröâ6ö6WGbrÓ°¢2æFDÖvRÖt÷G2°¢ÒVÇ6R°¢òòÆ6VöÆFW"&V7BÇS#BæòW&Ææ²öâ6W2GvVæ§2'Vr¢2æFE6Rw&V7BrÂ°¢¢ã2Â¢ãbÂs¢2ãRÂ¢2ãRÀ¢fÆÃ¢²6öÆ÷#¢tTTTTTRrÒÂÆæS¢²6öÆ÷#¢tDDDDDBrÒÀ¢Ò°¢2æFEFWBtÖvUÆçVæfÆ&ÆRrÂ°¢¢ã2Â¢ãÂs¢2ãRÂ¢À¢föçE6¦S¢Â6öÆ÷#¢trÂÆvã¢v6VçFW"rÂföçDf6S¢t&ÂrÀ¢Ò°¢Ð ¢6öç7B'ÒBã#°¢6öç7B'rÒã° ¢2æFEFWBFVÒçFFÆRÇÂuVçFFÆVBrÂ°¢¢'Â¢ãSRÂs¢'rÂ¢ãÀ¢föçE6¦S¢#Â&öÆC¢G'VRÂ6öÆ÷#¢D$µõDUBÂföçDfe: 'Arial',
+  briefSlide.background = { color: BRIEF_BG };
+  briefSlide.addText('Project Brief', {
+    x: 0.5, y: 0.3, w: 12, h: 0.7,
+    fontSize: 26, bold: true, color: DARK_TEXT, fontFace: 'Arial',
+  });
+
+  const briefLines = [
+    { text: `Client: ${brief.clientName || '\u2014'}`, options: { bold: true } },
+    { text: `Project: ${brief.projectName || '\u2014'}`, options: {} },
+    { text: `Type: ${brief.projectType || '\u2014'}`, options: {} },
+    { text: `Style: ${(brief.styleTags || []).join(', ') || '\u2014'}`, options: {} },
+    { text: `Palette: ${(brief.paletteTags || []).join(', ') || '\u2014'}`, options: {} },
+    { text: `Avoid: ${(brief.avoidTags || []).join(', ') || '\u2014'}`, options: { color: 'AA3333' } },
+    { text: `Rooms: ${(brief.rooms || []).join(', ') || '\u2014'}`, options: {} },
+    { text: `Gallery Wall: ${brief.galleryWall ? 'Yes' : 'No'}`, options: {} },
+    { text: `Target Pieces: ${brief.targetPieceCount || '\u2014'}`, options: {} },
+  ];
+
+  const briefTextArr = briefLines.map(line => ({
+    text: line.text + '\n',
+    options: { fontSize: 14, color: line.options.color || DARK_TEXT, bold: line.options.bold || false, fontFace: 'Arial' }
+  }));
+
+  briefSlide.addText(briefTextArr, {
+    x: 0.5, y: 1.2, w: 6, h: 5.5, valign: 'top',
+  });
+
+  if (brief.briefSummary) {
+    briefSlide.addText(`"${brief.briefSummary}"`, {
+      x: 7, y: 1.2, w: 5.8, h: 3,
+      fontSize: 15, color: MID_TEXT, fontFace: 'Arial', italic: true,
+      valign: 'top',
+    });
+  }
+
+  // -- Section header helper ---------------------------------------------------
+  function addSectionHeader(label, subtitle) {
+    const s = pptx.addSlide();
+    s.background = { color: SECTION_BG };
+    s.addText(label, {
+      x: 0.6, y: 2.6, w: 12, h: 1,
+      fontSize: 36, bold: true, color: WHITE, fontFace: 'Arial',
+    });
+    if (subtitle) {
+      s.addText(subtitle, {
+        x: 0.6, y: 3.7, w: 12, h: 0.5,
+        fontSize: 15, color: LIGHT_GRAY, fontFace: 'Arial',
+      });
+    }
+  }
+
+  // -- Artwork slide helper ----------------------------------------------------
+  async function addArtworkSlide(item, index, sectionLabel) {
+    const s = pptx.addSlide();
+    s.background = { color: LIGHT_BG };
+
+    // Convert to absolute URL once \u2014 never pass relative/empty URLs to hyperlink
+    const productLink = absUrl(item.product_url);
+
+    s.addText(`${sectionLabel} ${index + 1}`, {
+      x: 0.2, y: 0.15, w: 2, h: 0.35,
+      fontSize: 10, color: 'AAAAAA', fontFace: 'Arial',
+    });
+
+    // Artwork image \u2014 fetch as base64 so it works in serverless
+    const imgInfo = await fetchImg(item.image_url);
+    if (imgInfo && imgInfo.data) {
+      const maxW = 3.5;
+      const maxH = 3.5;
+      let drawW = maxW;
+      let drawH = maxW / (imgInfo.aspect || 1);
+      if (drawH > maxH) { drawH = maxH; drawW = maxH * (imgInfo.aspect || 1); }
+      const drawX = 0.3 + (maxW - drawW) / 2;
+      const drawY = 0.6 + (maxH - drawH) / 2;
+
+      const imgOpts = { data: imgInfo.data, x: drawX, y: drawY, w: drawW, h: drawH };
+      if (productLink) imgOpts.hyperlink = { url: productLink, tooltip: 'View on Society6' };
+      s.addImage(imgOpts);
+    } else {
+      // Placeholder rect \u2014 no hyperlink on shapes (pptxgenjs bug)
+      s.addShape('rect', {
+        x: 0.3, y: 0.6, w: 3.5, h: 3.5,
+        fill: { color: 'EEEEEE' }, line: { color: 'DDDDDD' },
+      });
+      s.addText('Image\nunavailable', {
+        x: 0.3, y: 1.8, w: 3.5, h: 1,
+        fontSize: 11, color: 'AAAAAA', align: 'center', fontFace: 'Arial',
+      });
+    }
+
+    const rx = 4.2;
+    const rw = 8.8;
+
+    s.addText(item.title || 'Untitled', {
+      x: rx, y: 0.55, w: rw, h: 1.1,
+      fontSize: 20, bold: true, color: DARK_TEXT, fontFace: 'Arial',
       valign: 'top', wrap: true,
     });
 
