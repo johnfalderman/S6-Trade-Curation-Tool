@@ -262,7 +262,7 @@ export default function HomePage() {
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      URL.revokeObjectURL(url)      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
       setSlidesResult({ filename: data.filename })
     } catch (err) {
       setSlidesError(err.message)
