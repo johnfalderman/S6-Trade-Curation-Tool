@@ -109,7 +109,7 @@ function parseBriefFallback(text) {
 
   const projectName = get('Design Project') || get('Design Project Name') || get('Project Name') || get('Name') || get('Project');
   const clientName = get('Company Name') || get('Client Name') || get('Property Name') || get('Business Name') || get('Company') || '';
-  const location = get('Location') || get('City') || get('Project Location') || '';
+  const briefLocation = get('Location') || get('City') || get('Project Location') || '';
   const projectTypeLine = (get('Project Type') || get('Type') || '').toLowerCase();
   let projectType = 'other';
   if (/restaurant|dining|cafe|bar/.test(projectTypeLine)) projectType = 'restaurant';
@@ -154,7 +154,7 @@ function parseBriefFallback(text) {
   const galleryWall = galleryField.includes('yes') || fullLower.includes('gallery wall');
   const briefSummary = `${projectType} project seeking ${styleTags.join(', ')} wall art in ${paletteTags.join(', ')} tones.`;
 
-  return { projectName, clientName, location, projectType, styleTags, paletteTags, avoidTags, galleryWall, targetPieceCount,
+  return { projectName, clientName, location: briefLocation, projectType, styleTags, paletteTags, avoidTags, galleryWall, targetPieceCount,
            rooms: [], keyThemes: styleTags.slice(0, 3), searchKeywords: [...styleTags, ...paletteTags], briefSummary };
 }
 
