@@ -253,12 +253,16 @@ export default function HomePage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Unknown error')
+      const bytes = Uint8Array.from(atob(data.pptxBase64), c => c.charCodeAt(0))
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
+      const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = 'data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,' + data.pptxBase64
+      link.href = url
       link.download = data.filename || 'S6-Curation.pptx'
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
+      URL.revokeObjectURL(url)      document.body.removeChild(link)
       setSlidesResult({ filename: data.filename })
     } catch (err) {
       setSlidesError(err.message)
