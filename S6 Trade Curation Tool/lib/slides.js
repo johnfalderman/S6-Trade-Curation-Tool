@@ -1,7 +1,8 @@
 /**
  * Generates a .pptx deck using pptxgenjs.
- * No Google credentials needed. Returns base64 PPTX for direct download.
- * Images and "View on Society6" links are clickable in the final deck.
+ * Grid layout: imagesPerSlide artworks per slide (default 8 = 4 cols x 2 rows).
+ * All images fetched concurrently. Images + captions are clickable hyperlinks.
+ * Cover slide shows: projectName, clientName, location.
  */
 
 const DARK_BG    = '14141E';
@@ -11,9 +12,7 @@ const BRIEF_BG   = 'F5F5F8';
 const WHITE      = 'FFFFFF';
 const LIGHT_GRAY = 'AAAACC';
 const DARK_TEXT  = '141428';
-const MID_TEXT   = '555566';
 const S6_RED     = 'E8382C';
-const LINK_BLUE  = '2D5FCC';
 
 /**
  * Convert a relative Society6 path to an absolute URL.
@@ -28,7 +27,7 @@ function absUrl(url) {
 
 /**
  * Fetch an image and return { data: 'data:<mime>;base64,...', aspect } or null.
- * Using base64 data is more reliable than `path` in serverless environments.
+ * Using base64 data is more reliable than path in serverless environments.
  */
 async function fetchImg(url) {
   const full = absUrl(url);
@@ -36,7 +35,7 @@ async function fetchImg(url) {
   try {
     const res = await fetch(full, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
@@ -65,7 +64,7 @@ async function fetchImg(url) {
   }
 }
 
-export async function createSlidesDeck(brief, { primary = [], accent = [], galleryWallSets = [] }) {
+export async function createSlidesDeck(brief, { primary = [], accent = [], galleryWallSets = [], imagesPerSlide = 8 }) {
   const PptxGenJS = (await import('pptxgenjs')).default;
   const pptx = new PptxGenJS();
 
@@ -75,30 +74,54 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
 
   const date = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
-  // -- Cover slide -------------------------------------------------------------
+  // -- Pre-fetch ALL images concurrently (much faster than sequential)
+  const allItems = [
+    ...primary,
+    ...accent,
+    ...(galleryWallSets.flatMap(s => s.items || [])),
+  ];
+  const imgCache = new Map();
+  await Promise.allSettled(
+    allItems.map(async (item) => {
+      if (item.image_url && !imgCache.has(item.image_url)) {
+        const info = await fetchImg(item.image_url);
+        if (info) imgCache.set(item.image_url, info);
+      }
+    })
+  );
+
+  // -- Cover slide
   const cover = pptx.addSlide();
   cover.background = { color: DARK_BG };
   cover.addText(brief.projectName || 'Trade Curation', {
-    x: 0.6, y: 2.4, w: 12, h: 1.1,
+    x: 0.6, y: 1.8, w: 12, h: 1.2,
     fontSize: 44, bold: true, color: WHITE, fontFace: 'Arial',
   });
+  let coverY = 3.15;
   if (brief.clientName) {
     cover.addText(brief.clientName, {
-      x: 0.6, y: 3.55, w: 10, h: 0.55,
-      fontSize: 20, color: LIGHT_GRAY, fontFace: 'Arial',
+      x: 0.6, y: coverY, w: 10, h: 0.55,
+      fontSize: 22, color: LIGHT_GRAY, fontFace: 'Arial',
+    });
+    coverY += 0.6;
+  }
+  if (brief.location) {
+    cover.addText(brief.location, {
+      x: 0.6, y: coverY, w: 10, h: 0.45,
+      fontSize: 16, color: LIGHT_GRAY, fontFace: 'Arial',
     });
   }
-  cover.addText(`Society6 Wall Art Curation  \u2022  ${date}`, {
-    x: 0.6, y: 3.65 + (brief.clientName ? 0.6 : 0), w: 10, h: 0.5,
-    fontSize: 16, color: LIGHT_GRAY, fontFace: 'Arial',
+  cover.addText('Society6 Wall Art Curation  \u2022  ' + date, {
+    x: 0.6, y: 6.4, w: 10, h: 0.4,
+    fontSize: 13, color: LIGHT_GRAY, fontFace: 'Arial',
   });
   cover.addText('society6.com/trade', {
-    x: 0.6, y: 6.7, w: 4, h: 0.35,
-    fontSize: 12, color: LIGHT_GRAY, fontFace: 'Arial',
+    x: 0.6, y: 6.9, w: 4, h: 0.3,
+    fontSize: 11, color: LIGHT_GRAY, fontFace: 'Arial',
     hyperlink: { url: 'https://society6.com/trade' },
   });
 
-  // -- Brief summary slide -----------------------------------------------------
+  // -- Brief summary slide
   const briefSlide = pptx.addSlide();
   briefSlide.background = { color: BRIEF_BG };
   briefSlide.addText('Project Brief', {
@@ -107,35 +130,28 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   });
 
   const briefLines = [
-    { text: `Client: ${brief.clientName || '\u2014'}`, options: { bold: true } },
-    { text: `Project: ${brief.projectName || '\u2014'}`, options: {} },
-    { text: `Type: ${brief.projectType || '\u2014'}`, options: {} },
-    { text: `Style: ${(brief.styleTags || []).join(', ') || '\u2014'}`, options: {} },
-    { text: `Palette: ${(brief.paletteTags || []).join(', ') || '\u2014'}`, options: {} },
-    { text: `Avoid: ${(brief.avoidTags || []).join(', ') || '\u2014'}`, options: { color: 'AA3333' } },
-    { text: `Rooms: ${(brief.rooms || []).join(', ') || '\u2014'}`, options: {} },
-    { text: `Gallery Wall: ${brief.galleryWall ? 'Yes' : 'No'}`, options: {} },
-    { text: `Target Pieces: ${brief.targetPieceCount || '\u2014'}`, options: {} },
+    { text: 'Client: ' + (brief.clientName || '\u2014'), options: { bold: true } },
+    { text: 'Project: ' + (brief.projectName || '\u2014'), options: {} },
+    { text: 'Location: ' + (brief.location || '\u2014'), options: {} },
+    { text: 'Type: ' + (brief.projectType || '\u2014'), options: {} },
+    { text: 'Style: ' + ((brief.styleTags || []).join(', ') || '\u2014'), options: {} },
+    { text: 'Palette: ' + ((brief.paletteTags || []).join(', ') || '\u2014'), options: {} },
+    { text: 'Avoid: ' + ((brief.avoidTags || []).join(', ') || '\u2014'), options: { color: 'AA3333' } },
+    { text: 'Rooms: ' + ((brief.rooms || []).join(', ') || '\u2014'), options: {} },
+    { text: 'Gallery Wall: ' + (brief.galleryWall ? 'Yes' : 'No'), options: {} },
+    { text: 'Target Pieces: ' + (brief.targetPieceCount || brief.pieceCount || '\u2014'), options: {} },
   ];
 
   const briefTextArr = briefLines.map(line => ({
     text: line.text + '\n',
-    options: { fontSize: 14, color: line.options.color || DARK_TEXT, bold: line.options.bold || false, fontFace: 'Arial' }
+    options: { fontSize: 13, color: line.options.color || DARK_TEXT, bold: line.options.bold || false, fontFace: 'Arial' }
   }));
 
   briefSlide.addText(briefTextArr, {
-    x: 0.5, y: 1.2, w: 6, h: 5.5, valign: 'top',
+    x: 0.5, y: 1.2, w: 12, h: 5.5, valign: 'top',
   });
 
-  if (brief.briefSummary) {
-    briefSlide.addText(`"${brief.briefSummary}"`, {
-      x: 7, y: 1.2, w: 5.8, h: 3,
-      fontSize: 15, color: MID_TEXT, fontFace: 'Arial', italic: true,
-      valign: 'top',
-    });
-  }
-
-  // -- Section header helper ---------------------------------------------------
+  // -- Section header helper
   function addSectionHeader(label, subtitle) {
     const s = pptx.addSlide();
     s.background = { color: SECTION_BG };
@@ -151,116 +167,97 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
     }
   }
 
-  // -- Artwork slide helper ----------------------------------------------------
-  async function addArtworkSlide(item, index, sectionLabel) {
+  // -- Grid slide helper: up to imagesPerSlide images in a 4-column grid
+  // Images and captions are both hyperlinked to Society6 product pages.
+  function addGridSlide(items, sectionLabel, slideNum) {
+    const COLS = 4;
+    const rows = Math.ceil(items.length / COLS);
+
+    // Layout constants (inches, LAYOUT_WIDE = 13.33 x 7.5)
+    const marginX  = 0.18;
+    const marginTop = 0.42; // space for slide label
+    const gapX     = 0.1;
+    const gapY     = 0.08;
+    const captionH = 0.38;
+
+    const cellW = (13.33 - 2 * marginX - (COLS - 1) * gapX) / COLS; // ~3.17"
+    const totalImgH = 7.5 - marginTop - rows * captionH - (rows - 1) * gapY;
+    const imgH = totalImgH / rows;
+
     const s = pptx.addSlide();
     s.background = { color: LIGHT_BG };
 
-    // Convert to absolute URL once \u2014 never pass relative/empty URLs to hyperlink
-    const productLink = absUrl(item.product_url);
-
-    s.addText(`${sectionLabel} ${index + 1}`, {
-      x: 0.2, y: 0.15, w: 2, h: 0.35,
-      fontSize: 10, color: 'AAAAAA', fontFace: 'Arial',
+    // Slide label
+    s.addText(sectionLabel + '  |  Slide ' + slideNum, {
+      x: 0.18, y: 0.08, w: 10, h: 0.28,
+      fontSize: 9, color: 'AAAAAA', fontFace: 'Arial',
     });
 
-    // Artwork image \u2014 fetch as base64 so it works in serverless
-    const imgInfo = await fetchImg(item.image_url);
-    if (imgInfo && imgInfo.data) {
-      const maxW = 3.5;
-      const maxH = 3.5;
-      let drawW = maxW;
-      let drawH = maxW / (imgInfo.aspect || 1);
-      if (drawH > maxH) { drawH = maxH; drawW = maxH * (imgInfo.aspect || 1); }
-      const drawX = 0.3 + (maxW - drawW) / 2;
-      const drawY = 0.6 + (maxH - drawH) / 2;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const col = i % COLS;
+      const row = Math.floor(i / COLS);
+      const cellX = marginX + col * (cellW + gapX);
+      const cellY = marginTop + row * (imgH + captionH + gapY);
 
-      const imgOpts = { data: imgInfo.data, x: drawX, y: drawY, w: drawW, h: drawH };
-      if (productLink) imgOpts.hyperlink = { url: productLink, tooltip: 'View on Society6' };
-      s.addImage(imgOpts);
-    } else {
-      // Placeholder rect \u2014 no hyperlink on shapes (pptxgenjs bug)
-      s.addShape('rect', {
-        x: 0.3, y: 0.6, w: 3.5, h: 3.5,
-        fill: { color: 'EEEEEE' }, line: { color: 'DDDDDD' },
-      });
-      s.addText('Image\nunavailable', {
-        x: 0.3, y: 1.8, w: 3.5, h: 1,
-        fontSize: 11, color: 'AAAAAA', align: 'center', fontFace: 'Arial',
-      });
-    }
+      const productLink = absUrl(item.product_url);
+      const imgInfo = imgCache.get(item.image_url);
 
-    const rx = 4.2;
-    const rw = 8.8;
+      if (imgInfo && imgInfo.data) {
+        // Fit image preserving aspect ratio within cell bounds
+        let drawW = cellW;
+        let drawH = cellW / (imgInfo.aspect || 1);
+        if (drawH > imgH) { drawH = imgH; drawW = imgH * (imgInfo.aspect || 1); }
+        const drawX = cellX + (cellW - drawW) / 2;
+        const drawY = cellY + (imgH - drawH) / 2;
 
-    s.addText(item.title || 'Untitled', {
-      x: rx, y: 0.55, w: rw, h: 1.1,
-      fontSize: 20, bold: true, color: DARK_TEXT, fontFace: 'Arial',
-      valign: 'top', wrap: true,
-    });
+        const imgOpts = { data: imgInfo.data, x: drawX, y: drawY, w: drawW, h: drawH };
+        if (productLink) imgOpts.hyperlink = { url: productLink, tooltip: 'View on Society6' };
+        s.addImage(imgOpts);
+      } else {
+        // Placeholder rect when image unavailable
+        s.addShape('rect', {
+          x: cellX, y: cellY, w: cellW, h: imgH,
+          fill: { color: 'EEEEEE' }, line: { color: 'DDDDDD' },
+        });
+      }
 
-    s.addText(item.source_collection || '', {
-      x: rx, y: 1.75, w: rw, h: 0.4,
-      fontSize: 12, color: '888899', fontFace: 'Arial',
-    });
-
-    if (productLink) {
-      s.addText('View on Society6 \u2192', {
-        x: rx, y: 2.25, w: 4.5, h: 0.45,
-        fontSize: 14, color: S6_RED, bold: true, fontFace: 'Arial',
-        hyperlink: { url: productLink },
-      });
-      s.addText(productLink, {
-        x: rx, y: 2.8, w: rw, h: 0.35,
-        fontSize: 9, color: LINK_BLUE, fontFace: 'Arial',
-        hyperlink: { url: productLink },
-      });
-    } else {
-      s.addText(item.product_url || '', {
-        x: rx, y: 2.8, w: rw, h: 0.35,
-        fontSize: 9, color: LINK_BLUE, fontFace: 'Arial',
-      });
-    }
-
-    if (item.reason) {
-      s.addText(`Why this fits: ${item.reason}`, {
-        x: rx, y: 3.3, w: rw, h: 1.0,
-        fontSize: 12, color: MID_TEXT, fontFace: 'Arial', italic: true,
-        valign: 'top', wrap: true,
-      });
-    }
-
-    if (item.pinned) {
-      s.addText('Pinned by curator', {
-        x: rx, y: 4.5, w: 4, h: 0.35,
-        fontSize: 10, color: '3060AA', fontFace: 'Arial',
-      });
+      // Caption text below image -- also hyperlinked
+      const captionOpts = {
+        x: cellX, y: cellY + imgH + 0.02, w: cellW, h: captionH,
+        fontSize: 7, color: DARK_TEXT, fontFace: 'Arial',
+        align: 'center', valign: 'top', wrap: true,
+      };
+      if (productLink) captionOpts.hyperlink = { url: productLink };
+      s.addText((item.title || 'Untitled').substring(0, 60), captionOpts);
     }
   }
 
-  // -- Primary Collection ------------------------------------------------------
+  // -- Primary Collection
   if (primary.length > 0) {
-    addSectionHeader('Primary Collection', `${primary.length} curated selections`);
-    for (let i = 0; i < primary.length; i++) {
-      await addArtworkSlide(primary[i], i, 'P');
+    addSectionHeader('Primary Collection', primary.length + ' curated selections');
+    for (let start = 0; start < primary.length; start += imagesPerSlide) {
+      const chunk = primary.slice(start, start + imagesPerSlide);
+      addGridSlide(chunk, 'Primary', Math.floor(start / imagesPerSlide) + 1);
     }
   }
 
-  // -- Accent & Alternates -----------------------------------------------------
+  // -- Accent & Alternates
   if (accent.length > 0) {
-    addSectionHeader('Accent & Alternates', `${accent.length} additional options`);
-    for (let i = 0; i < accent.length; i++) {
-      await addArtworkSlide(accent[i], i, 'A');
+    addSectionHeader('Accent & Alternates', accent.length + ' additional options');
+    for (let start = 0; start < accent.length; start += imagesPerSlide) {
+      const chunk = accent.slice(start, start + imagesPerSlide);
+      addGridSlide(chunk, 'Accent', Math.floor(start / imagesPerSlide) + 1);
     }
   }
 
-  // -- Gallery Wall Sets -------------------------------------------------------
+  // -- Gallery Wall Sets
   if (galleryWallSets.length > 0) {
     addSectionHeader('Gallery Wall Sets', 'Suggested groupings for gallery walls');
     for (const setObj of galleryWallSets) {
       const s = pptx.addSlide();
       s.background = { color: LIGHT_BG };
-      s.addText(`Gallery Wall Set ${setObj.setNumber}${setObj.theme ? ': ' + setObj.theme : ''}`, {
+      s.addText('Gallery Wall Set ' + setObj.setNumber + (setObj.theme ? ': ' + setObj.theme : ''), {
         x: 0.4, y: 0.2, w: 12, h: 0.6,
         fontSize: 22, bold: true, color: DARK_TEXT, fontFace: 'Arial',
       });
@@ -272,7 +269,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
         const cx = 0.4 + col * 4.3;
         const cy = 1.0 + row * 3.2;
         const gwLink = absUrl(item.product_url);
-        const gwImg = await fetchImg(item.image_url);
+        const gwImg = imgCache.get(item.image_url);
         if (gwImg && gwImg.data) {
           const imgOpts = { data: gwImg.data, x: cx, y: cy, w: 3.8, h: 2.5 };
           if (gwLink) imgOpts.hyperlink = { url: gwLink, tooltip: 'View on Society6' };
@@ -293,10 +290,10 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
     }
   }
 
-  // -- Generate base64 output -------------------------------------------------
+  // -- Generate base64 output
   const pptxBase64 = await pptx.write({ outputType: 'base64' });
   const slug = (brief.projectName || 'S6-Curation').replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-');
-  const filename = `${slug}-Society6.pptx`;
+  const filename = slug + '-Society6.pptx';
 
   return { pptxBase64, filename };
 }
