@@ -255,7 +255,7 @@ export default function HomePage() {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Unknown error')
+      if (!res.ok || data.error) throw new Error(data.error || 'Unknown error')
       const bytes = Uint8Array.from(atob(data.pptxBase64), c => c.charCodeAt(0))
       const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
       const url = URL.createObjectURL(blob)
