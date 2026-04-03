@@ -120,7 +120,7 @@ function parseBriefText(text) {
     floral:      ['floral', 'flowers', 'botanical', 'garden'],
     kids:        ['kids', 'children', 'nursery', 'playful', 'cartoon'],
     landscape:   ['landscape', 'nature', 'scenery'],
-    typography:  ['typography, 'text', 'words', 'quotes', 'lettering'],
+    typography:  ['typography', 'text', 'words', 'quotes', 'lettering'],
     abstract:    ['abstract', 'non-representational'],
     dark:        ['dark', 'dark imagery', 'moody', 'skulls'],
     animal:      ['animal', 'animals', 'wildlife'],
