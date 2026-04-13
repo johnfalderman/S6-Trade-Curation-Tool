@@ -11,11 +11,18 @@ Gallery Wall: Yes
 Target Pieces: 80
 Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm. Should feel elevated but approachable.`
 
-function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null }) {
+function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null }) {
   const [imgError, setImgError] = useState(false)
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
   return (
     <div className={`card group flex flex-col relative ${pinned ? 'ring-2 ring-blue-400' : ''} ${onToggle && !selected ? 'opacity-40' : ''}`}>
+      {onPinToggle && (
+        <button
+          onClick={e => { e.preventDefault(); onPinToggle(item.product_url) }}
+          className={`absolute top-1 left-1 z-10 w-6 h-6 rounded-full border flex items-center justify-center text-xs font-bold transition-colors ${pinned ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white/90 border-gray-300 text-gray-500 hover:text-blue-500 hover:border-blue-400'}`}
+          title={pinned ? 'Unpin — will be replaced on next refine' : 'Pin — keep this on next refine'}
+        >{pinned ? '\u2605' : '\u2606'}</button>
+      )}
       {onToggle && (
         <button
           onClick={e => { e.preventDefault(); onToggle(item.product_url) }}
@@ -24,7 +31,7 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
         >{selected ? 'x' : '+'}</button>
       )}
       {pinned && (
-        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">[pin] Pinned</div>
+        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">[pin] Pinned — kept on refine</div>
       )}
       <div className={`bg-gray-100 overflow-hidden ${imgSize}`}>
         {item.image_url && !imgError ? (
@@ -194,17 +201,33 @@ export default function HomePage() {
     setSlidesResult(null)
     setSlidesError(null)
     try {
-      const prevItemTitles = [
+      // Build pin list from local pinnedUrls + whatever the user has pin-toggled
+      // on the current result set. Pinned items should be preserved; only the
+      // UNPINNED slots need to be refreshed, so only their titles go into the
+      // prev-items exclusion list sent to the API.
+      const currentItems = [
         ...(results?.primary || []),
         ...(results?.accent || []),
-      ].map(r => r.title).filter(Boolean)
+      ]
+      const pinnedFromCards = currentItems
+        .filter(isPinned)
+        .map(i => i.product_url)
+        .filter(Boolean)
+        .map(u => (u.startsWith('/') ? 'https://society6.com' + u : u))
+      const mergedPinnedUrls = Array.from(new Set([...(pinnedUrls || []), ...pinnedFromCards]))
+
+      const prevItemTitles = currentItems
+        .filter(i => !isPinned(i))
+        .map(i => i.title)
+        .filter(Boolean)
+
       const data = await callRecommend({
         brief: briefText,
         moodboardUrl,
         moodboardFile,
         refineFeedback,
         prevItemTitles,
-        pinnedUrls,
+        pinnedUrls: mergedPinnedUrls,
       })
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
@@ -232,6 +255,28 @@ export default function HomePage() {
 
   function handleRemovePin(url) {
     setPinnedUrls(u => u.filter(x => x !== url))
+  }
+
+  // Toggle a result card's pin state. Normalizes the URL so a Society6-relative
+  // href and an absolute URL are treated as the same item.
+  function togglePin(url) {
+    if (!url) return
+    const full = url.startsWith('/') ? 'https://society6.com' + url : url
+    setPinnedUrls(u =>
+      u.includes(full) || u.includes(url)
+        ? u.filter(x => x !== full && x !== url)
+        : [...u, full]
+    )
+  }
+
+  // Does `item` count as pinned? True if backend marked it pinned OR its URL
+  // is in the local pinnedUrls list.
+  function isPinned(item) {
+    if (item?.pinned) return true
+    const url = item?.product_url || ''
+    if (!url) return false
+    const full = url.startsWith('/') ? 'https://society6.com' + url : url
+    return pinnedUrls.includes(full) || pinnedUrls.includes(url)
   }
 
   async function handleGenerateSlides() {
@@ -496,7 +541,7 @@ export default function HomePage() {
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.primary.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} />
                   ))}
                 </div>
               </div>
@@ -513,7 +558,7 @@ export default function HomePage() {
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.accent.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={item.pinned} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} />
                   ))}
                 </div>
               </div>
@@ -534,8 +579,15 @@ export default function HomePage() {
           {/* -- Refine results -- */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-900 mb-1">Refine These Results</h3>
-            <p className="text-xs text-gray-500 mb-3">
+            <p className="text-xs text-gray-500 mb-1">
               Tell Claude what to adjust -- e.g. "more jazz and vintage, fewer landscapes" or "go darker, nothing with warm colors"
+            </p>
+            <p className="text-xs text-blue-600 mb-3">
+              Tip: click the star on any card to pin it. Pinned items are kept; only unpinned slots get refreshed.
+              {(() => {
+                const count = [...(results?.primary || []), ...(results?.accent || [])].filter(isPinned).length
+                return count > 0 ? ` (${count} pinned)` : ''
+              })()}
             </p>
             <div className="flex gap-2">
               <input
