@@ -170,7 +170,9 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   // -- Grid slide helper: up to imagesPerSlide images in a 4-column grid
   // Images and captions are both hyperlinked to Society6 product pages.
   function addGridSlide(items, sectionLabel, slideNum) {
-    const COLS = 4;
+    // Grid shape varies by imagesPerSlide: 4 -> 2x2, 8 -> 4x2, 12 -> 4x3.
+    // Fallback: keep <=4 images at 2 cols, otherwise 4 cols.
+    const COLS = imagesPerSlide <= 4 ? 2 : 4;
     const rows = Math.ceil(items.length / COLS);
 
     // Layout constants (inches, LAYOUT_WIDE = 13.33 x 7.5)
@@ -271,7 +273,16 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
         const gwLink = absUrl(item.product_url);
         const gwImg = imgCache.get(item.image_url);
         if (gwImg && gwImg.data) {
-          const imgOpts = { data: gwImg.data, x: cx, y: cy, w: 3.8, h: 2.5 };
+          // Fit image preserving aspect ratio within the 3.8 x 2.5 cell.
+          const cellW = 3.8;
+          const cellH = 2.5;
+          const aspect = gwImg.aspect || 1;
+          let drawW = cellW;
+          let drawH = cellW / aspect;
+          if (drawH > cellH) { drawH = cellH; drawW = cellH * aspect; }
+          const drawX = cx + (cellW - drawW) / 2;
+          const drawY = cy + (cellH - drawH) / 2;
+          const imgOpts = { data: gwImg.data, x: drawX, y: drawY, w: drawW, h: drawH };
           if (gwLink) imgOpts.hyperlink = { url: gwLink, tooltip: 'View on Society6' };
           s.addImage(imgOpts);
         } else {

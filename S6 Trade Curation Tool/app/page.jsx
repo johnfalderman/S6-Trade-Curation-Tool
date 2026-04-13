@@ -707,7 +707,7 @@ export default function HomePage() {
                   onChange={e => setImagesPerSlide(Number(e.target.value))}
                   className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
                 >
-                  {[8, 12, 16, 24, 32].map(n => (
+                  {[4, 8, 12].map(n => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                 </select>
