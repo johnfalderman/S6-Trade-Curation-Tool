@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getStore } from '@netlify/blobs';
 
-// âââ Stage 1: Claude parses the brief into structured data ââââââââââââââââââ
+// ——— Stage 1: Claude parses the brief into structured data ———————————————
 async function parseBriefWithClaude(text) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -13,7 +13,7 @@ async function parseBriefWithClaude(text) {
       role: 'user',
       content: `You are an interior design trade art curation assistant. Parse this Jotform curation brief into structured JSON.
 
-The brief may be in any format â a direct form response, a copied email, a freeform description, or a structured list.
+The brief may be in any format — a direct form response, a copied email, a freeform description, or a structured list.
 
 BRIEF TEXT:
 ${text}
@@ -24,14 +24,15 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "clientName": "look for 'Company Name', 'Client Name', 'Property Name', 'Business Name', or 'Company' label. Use value exactly.",
   "location": "city and state/country (look for Location, City, Address, or any geographic reference)",
   "projectType": "hotel|restaurant|vacation_rental|office|other",
-  "styleTags": ["art style keywords â e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic"],
-  "paletteTags": ["color keywords â e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red"],
-  "avoidTags": ["things to explicitly avoid â e.g. floral, kids, landscape, typography, abstract, dark, bright, pastel"],
+  "styleTags": ["art style keywords — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic"],
+  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red"],
+  "avoidTags": ["things to explicitly avoid — e.g. floral, kids, landscape, typography, abstract, dark, bright, pastel"],
   "galleryWall": true or false,
   "targetPieceCount": number or null,
-  "keyThemes": ["3-6 short vibe phrases â e.g. 'jazz club atmosphere', 'coastal modern', 'dark moody', 'music venue', 'southern charm'"],
+  "keyThemes": ["3-6 short vibe phrases — e.g. 'jazz club atmosphere', 'coastal modern', 'dark moody', 'music venue', 'southern charm'"],
   "rooms": ["room types mentioned"],
-  "searchKeywords": ["15-25 individual words that describe artwork fitting this brief â very specific words like 'saxophone', 'vinyl', 'turntable', 'cobalt', 'terracotta', 'geometric' â that would match artwork titles or descriptions"],
+  "searchKeywords": ["15-25 individual words that describe artwork fitting this brief — very specific words like 'saxophone', 'vinyl', 'turntable', 'cobalt', 'terracotta', 'geometric' — that would match artwork titles or descriptions"],
+  "subjectMustMatch": ["the 2-5 PRIMARY subject categories this brief is about — e.g. 'music', 'urban', 'coastal'. These are the non-negotiable themes. An artwork that doesn't relate to ANY of these subjects is a bad recommendation, even if the colors and mood are right."],
   "briefSummary": "2-3 sentence plain English summary of what this client needs"
 }`
     }]
@@ -41,13 +42,14 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   return JSON.parse(jsonStr);
 }
 
-// âââ Stage 2: Claude selects the best artworks from candidates ââââââââââââââ
+// ——— Stage 2: Claude selects the best artworks from candidates ——————————————
 async function selectWithClaude(candidates, brief, prevItemTitles = [], feedback = '') {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+  // CHANGE 2: Include style + palette tags so Claude has richer context
   const catalogList = candidates.slice(0, 200).map((r, i) =>
-    `${i}|${r.title}|${r.source_collection}|${r.product_handle}`
+    `${i}|${r.title}|${r.source_collection}|${r.product_handle}|styles:${(r.style||[]).join(',')}|palette:${(r.palette||[]).join(',')}`
   ).join('\n');
 
   const refinementContext = prevItemTitles.length > 0
@@ -61,7 +63,11 @@ Select DIFFERENT artworks that directly address this feedback.`
     ? `Avoid anything with these qualities: ${brief.avoidTags.join(', ')}.`
     : '';
 
-  const prompt = `You are an expert art curator for Society6's trade program. You select wall art for interior designers, hotels, restaurants, and vacation rental owners. Your curation choices reflect genuine aesthetic judgment â not just keyword matching.
+  const subjectLine = (brief.subjectMustMatch || brief.styleTags || []).length > 0
+    ? `CRITICAL — The primary subject matter for this project is: ${(brief.subjectMustMatch || brief.styleTags || []).join(', ')}. Do NOT select artworks whose subject matter is unrelated to these themes, even if the colors or mood happen to match. For example, if the brief is about music/jazz, do not pick nature photography just because it's dark and moody.`
+    : '';
+
+  const prompt = `You are an expert art curator for Society6's trade program. You select wall art for interior designers, hotels, restaurants, and vacation rental owners. Your curation choices reflect genuine aesthetic judgment — not just keyword matching.
 
 CLIENT BRIEF:
 ${brief.briefSummary || ''}
@@ -69,23 +75,27 @@ Project: ${brief.projectName || 'Trade Client'} (${brief.projectType || 'commerc
 Style: ${(brief.styleTags || []).join(', ') || 'not specified'}
 Palette: ${(brief.paletteTags || []).join(', ') || 'not specified'}
 Themes: ${(brief.keyThemes || []).join(', ') || 'not specified'}
+${subjectLine}
 ${avoidLine}
 ${refinementContext}
 
-CATALOG OPTIONS (index|title|collection|handle):
+CATALOG OPTIONS (index|title|collection|handle|styles|palette):
 ${catalogList}
 
-Your task: Select the 20 artworks that best serve this client. Think like a curator â consider:
+Your task: Select the 20 artworks that best serve this client. Think like a curator — consider:
+- SUBJECT MATTER IS KING: Does the artwork's subject directly relate to the client's theme? A jazz club needs music art, not dark landscapes. A coastal hotel needs ocean art, not abstract geometry. Reject items where the subject is off-theme, even if colors match.
 - Does the title/subject matter fit the space and mood?
+- Do the style and palette tags align with what the client asked for?
+- Does the artwork cohesively contribute to a curated set — not just 20 random good pieces?
 - Does the collection source suggest the right medium (art print, canvas, etc.)?
-- Does the artwork cohesively contribute to a curated set â not just 20 random good pieces?
-${prevItemTitles.length > 0 ? '- The client has already seen the "previously shown" list â give them genuinely different options.' : ''}
+${prevItemTitles.length > 0 ? '- The client has already seen the "previously shown" list — give them genuinely different options.' : ''}
 
 Return ONLY a valid JSON array with no markdown or explanation:
 [{"index": 0, "handle": "exact-product-handle", "reason": "one specific sentence explaining why this piece fits the brief"}]`;
 
+  // CHANGE 3: Upgrade to Sonnet for better curatorial judgment
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: 'claude-sonnet-4-5-20250514',
     max_tokens: 2500,
     messages: [{ role: 'user', content: prompt }]
   });
@@ -96,7 +106,7 @@ Return ONLY a valid JSON array with no markdown or explanation:
   return JSON.parse(raw);
 }
 
-// âââ Regex Brief Parser (fallback when no API key) ââââââââââââââââââââââââââ
+// ——— Regex Brief Parser (fallback when no API key) ———————————————————————
 function parseBriefFallback(text) {
   if (!text) return defaultBrief();
 
@@ -179,6 +189,7 @@ function parseBriefFallback(text) {
     targetPieceCount, rooms: [],
     keyThemes: styleTags.slice(0, 3),
     searchKeywords: [...styleTags, ...paletteTags],
+    subjectMustMatch: styleTags.filter(s => !['dramatic', 'modern', 'vintage'].includes(s)),
     briefSummary
   };
 }
@@ -188,11 +199,12 @@ function defaultBrief() {
     projectName: '', clientName: '', location: '',
     projectType: 'other', styleTags: [], paletteTags: [],
     avoidTags: [], galleryWall: false, targetPieceCount: null,
-    rooms: [], keyThemes: [], searchKeywords: [], briefSummary: ''
+    rooms: [], keyThemes: [], searchKeywords: [],
+    subjectMustMatch: [], briefSummary: ''
   };
 }
 
-// âââ Catalog tagging ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ——— Catalog tagging ——————————————————————————————————————————————————————
 function tagRecord(r) {
   const text = `${r.title || ''} ${r.image_alt || ''} ${r.source_collection || ''} ${r.product_handle || ''}`.toLowerCase();
 
@@ -229,7 +241,13 @@ function tagRecord(r) {
   return { ...r, style, palette };
 }
 
-// âââ Full-catalog scoring (runs on every record) ââââââââââââââââââââââââââââ
+// ——— Subject-matter categories for mismatch detection ————————————————————
+// These are "concrete subject" tags. Mood/aesthetic tags like 'dramatic' and
+// 'modern' are excluded because they describe HOW something looks, not WHAT
+// the artwork depicts.
+const SUBJECT_TAGS = ['music', 'coastal', 'floral', 'landscape', 'urban', 'animal', 'southern', 'typography', 'abstract'];
+
+// ——— Full-catalog scoring (runs on every record) ——————————————————————————
 function scoreRecord(r, brief) {
   let score = 0;
   const text = `${r.title || ''} ${r.image_alt || ''} ${r.product_handle || ''}`.toLowerCase();
@@ -246,13 +264,13 @@ function scoreRecord(r, brief) {
     if (palette.includes(p)) score += 2;
   }
 
-  // searchKeywords â specific words like "jazz", "saxophone", "vinyl"
-  // that directly match catalog text â most precise signal
+  // searchKeywords — specific words like "jazz", "saxophone", "vinyl"
+  // that directly match catalog text — most precise signal
   for (const kw of brief.searchKeywords || []) {
     if (kw.length >= 3 && text.includes(kw.toLowerCase())) score += 4;
   }
 
-  // keyThemes phrase matching â split each theme into words
+  // keyThemes phrase matching — split each theme into words
   for (const theme of brief.keyThemes || []) {
     for (const word of theme.toLowerCase().split(/\s+/).filter(w => w.length >= 4)) {
       if (text.includes(word)) score += 2;
@@ -262,6 +280,26 @@ function scoreRecord(r, brief) {
   // Hard penalize avoid tags
   for (const a of brief.avoidTags || []) {
     if (style.includes(a) || text.includes(a)) score -= 8;
+  }
+
+  // CHANGE 1: Subject-mismatch penalty
+  // If the brief has specific subject requirements (e.g., "music"),
+  // penalize items that have a DIFFERENT concrete subject tag but NOT
+  // the required one. This prevents dark nature photos from sneaking
+  // into a jazz brief just because they match on palette/mood.
+  const requiredSubjects = brief.subjectMustMatch || [];
+  if (requiredSubjects.length > 0) {
+    const itemSubjects = style.filter(s => SUBJECT_TAGS.includes(s));
+    const hasRequiredSubject = itemSubjects.some(s => requiredSubjects.includes(s));
+
+    if (itemSubjects.length > 0 && !hasRequiredSubject) {
+      // Item has a concrete subject (e.g. "landscape") that doesn't match
+      // any required subject (e.g. "music") — penalize it
+      score -= 6;
+    } else if (hasRequiredSubject) {
+      // Item matches a required subject — bonus on top of the style match
+      score += 4;
+    }
   }
 
   // Small boost for best-selling collections
@@ -283,7 +321,7 @@ function normalizeUrl(r) {
   };
 }
 
-// âââ Route Handler ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ——— Route Handler ————————————————————————————————————————————————————————
 export async function POST(request) {
   try {
     let briefText = '';
@@ -345,7 +383,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
     }
 
-    // ââ Stage 1: Parse brief ââââââââââââââââââââââââââââââââââââââââââââââââ
+    // —— Stage 1: Parse brief ——————————————————————————————————————————————
     let brief;
     if (hasAnthropicKey) {
       try {
@@ -353,6 +391,8 @@ export async function POST(request) {
         brief.parsedBy = 'claude';
         if (!brief.searchKeywords)
           brief.searchKeywords = [...(brief.styleTags || []), ...(brief.paletteTags || [])];
+        if (!brief.subjectMustMatch)
+          brief.subjectMustMatch = (brief.styleTags || []).filter(s => SUBJECT_TAGS.includes(s));
       } catch (e) {
         console.warn('Claude brief parse failed, using fallback:', e.message);
         brief = parseBriefFallback(briefText);
@@ -363,8 +403,8 @@ export async function POST(request) {
       brief.parsedBy = 'regex';
     }
 
-    // ââ Score the ENTIRE catalog ââââââââââââââââââââââââââââââââââââââââââââ
-    // Tag every record, score every record â no sampling, no random cutoffs.
+    // —— Score the ENTIRE catalog ——————————————————————————————————————————
+    // Tag every record, score every record — no sampling, no random cutoffs.
     // This ensures no good match gets missed regardless of catalog size.
     const tagged = allRecords.map(tagRecord);
     const scored = tagged
@@ -372,7 +412,7 @@ export async function POST(request) {
       .filter(r => r._score > -3)  // only cut truly avoided items
       .sort((a, b) => b._score - a._score);
 
-    // ââ Deduplicate by artwork family âââââââââââââââââââââââââââââââââââââââ
+    // —— Deduplicate by artwork family —————————————————————————————————————
     const seen = new Set();
     const candidates = [];
     for (const r of scored) {
@@ -384,7 +424,7 @@ export async function POST(request) {
       }
     }
 
-    // ââ Stage 2: Claude selects the actual artworks âââââââââââââââââââââââââ
+    // —— Stage 2: Claude selects the actual artworks ———————————————————————
     let primary = [];
     let accent = [];
 
@@ -426,7 +466,7 @@ export async function POST(request) {
       accent = candidates.slice(20, 35);
     }
 
-    // ââ Pinned items (force-include specific Society6 URLs) âââââââââââââââââ
+    // —— Pinned items (force-include specific Society6 URLs) ———————————————
     const pinnedRecords = [];
     if (pinnedUrls.length > 0) {
       for (const url of pinnedUrls) {
@@ -444,7 +484,7 @@ export async function POST(request) {
       primary = [...pinnedRecords, ...primary.filter(r => !pinnedSet.has(r.product_url))];
     }
 
-    // ââ Gallery wall sets âââââââââââââââââââââââââââââââââââââââââââââââââââ
+    // —— Gallery wall sets —————————————————————————————————————————————————
     const galleryWallSets = brief.galleryWall ? [
       {
         setNumber: 1,
