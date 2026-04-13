@@ -279,6 +279,24 @@ export default function HomePage() {
     return pinnedUrls.includes(full) || pinnedUrls.includes(url)
   }
 
+  // Bulk pin/unpin a list of items (used by "Pin all" / "Unpin all" buttons).
+  function pinAll(items) {
+    const urls = (items || [])
+      .map(i => i?.product_url)
+      .filter(Boolean)
+      .map(u => (u.startsWith('/') ? 'https://society6.com' + u : u))
+    setPinnedUrls(u => Array.from(new Set([...(u || []), ...urls])))
+  }
+  function unpinAll(items) {
+    const toRemove = new Set(
+      (items || [])
+        .map(i => i?.product_url)
+        .filter(Boolean)
+        .flatMap(u => [u, u.startsWith('/') ? 'https://society6.com' + u : u])
+    )
+    setPinnedUrls(u => (u || []).filter(x => !toRemove.has(x)))
+  }
+
   async function handleGenerateSlides() {
     if (!results) return
     setSlidesLoading(true)
@@ -532,9 +550,12 @@ export default function HomePage() {
 
             {activeTab === 'primary' && (
               <div>
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                   <p className="text-sm text-gray-500">Top {results.primary.length} pieces. Click x to remove from deck.</p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-3 items-center">
+                    <button onClick={() => pinAll(results.primary)} className="text-xs text-blue-600 hover:text-blue-800 underline">Pin all</button>
+                    <button onClick={() => unpinAll(results.primary)} className="text-xs text-blue-600 hover:text-blue-800 underline">Unpin all</button>
+                    <span className="text-gray-300">|</span>
                     <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.primary.forEach(i => n.add(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Select all</button>
                     <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.primary.forEach(i => n.delete(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Deselect all</button>
                   </div>
@@ -549,9 +570,12 @@ export default function HomePage() {
 
             {activeTab === 'accent' && (
               <div>
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                   <p className="text-sm text-gray-500">Accent pieces and alternates. Click x to remove from deck.</p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-3 items-center">
+                    <button onClick={() => pinAll(results.accent)} className="text-xs text-blue-600 hover:text-blue-800 underline">Pin all</button>
+                    <button onClick={() => unpinAll(results.accent)} className="text-xs text-blue-600 hover:text-blue-800 underline">Unpin all</button>
+                    <span className="text-gray-300">|</span>
                     <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.accent.forEach(i => n.add(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Select all</button>
                     <button onClick={() => setSelectedItems(prev => { const n = new Set(prev); results.accent.forEach(i => n.delete(i.product_url)); return n })} className="text-xs text-gray-500 hover:text-gray-800 underline">Deselect all</button>
                   </div>
