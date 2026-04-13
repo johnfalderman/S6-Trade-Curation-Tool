@@ -141,7 +141,7 @@ export default function HomePage() {
   const [deckLocation, setDeckLocation] = useState('')
   const [deckDate, setDeckDate] = useState('')
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, pinnedUrls }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
@@ -149,13 +149,14 @@ export default function HomePage() {
       fd.append('moodboardUrl', moodboardUrl || '')
       fd.append('moodboard', moodboardFile)
       if (refineFeedback) fd.append('refineFeedback', refineFeedback)
+      if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
       if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, pinnedUrls }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls }),
       })
     }
     const data = await res.json()
@@ -193,11 +194,16 @@ export default function HomePage() {
     setSlidesResult(null)
     setSlidesError(null)
     try {
+      const prevItemTitles = [
+        ...(results?.primary || []),
+        ...(results?.accent || []),
+      ].map(r => r.title).filter(Boolean)
       const data = await callRecommend({
         brief: briefText,
         moodboardUrl,
         moodboardFile,
         refineFeedback,
+        prevItemTitles,
         pinnedUrls,
       })
       setRefineHistory(h => [...h, refineFeedback])

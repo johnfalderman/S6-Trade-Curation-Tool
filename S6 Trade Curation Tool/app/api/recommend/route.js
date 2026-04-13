@@ -54,12 +54,20 @@ async function selectWithClaude(candidates, brief, prevItemTitles = [], feedback
     `${i}|${r.title}|${r.source_collection}|${r.product_handle}|styles:${(r.style||[]).join(',')}|palette:${(r.palette||[]).join(',')}`
   ).join('\n');
 
-  const refinementContext = prevItemTitles.length > 0
-    ? `\nPREVIOUSLY SHOWN TO CLIENT (do not repeat these unless explicitly asked):
-${prevItemTitles.slice(0, 25).join('\n')}
-CLIENT FEEDBACK: "${feedback}"
-Select DIFFERENT artworks that directly address this feedback.`
-    : '';
+  const hasFeedback = (feedback || '').trim().length > 0;
+  const hasPrev = prevItemTitles.length > 0;
+  let refinementContext = '';
+  if (hasFeedback || hasPrev) {
+    const parts = ['\n=== REFINEMENT REQUEST ==='];
+    if (hasFeedback) {
+      parts.push(`CLIENT FEEDBACK (this is the MOST IMPORTANT instruction — your selection MUST directly reflect it): "${feedback}"`);
+    }
+    if (hasPrev) {
+      parts.push(`PREVIOUSLY SHOWN TO CLIENT (do NOT repeat these titles):\n${prevItemTitles.slice(0, 40).join('\n')}`);
+    }
+    parts.push('Select artworks that concretely act on the client feedback above. If the feedback says "less X, more Y", your picks must noticeably shift away from X and toward Y compared to before. Do not return items that are essentially the same vibe as what was previously shown.');
+    refinementContext = parts.join('\n');
+  }
 
   const avoidLine = (brief.avoidTags || []).length > 0
     ? `Avoid anything with these qualities: ${brief.avoidTags.join(', ')}.`
@@ -406,6 +414,9 @@ export async function POST(request) {
       brief.parsedBy = 'regex';
     }
 
+    // TEMP DEBUG: confirm refinement inputs reach the API
+    console.log('[recommend] refineFeedback:', JSON.stringify(refineFeedback), '| prevItemTitles count:', Array.isArray(prevItemTitles) ? prevItemTitles.length : 0);
+
     // —— Score the ENTIRE catalog ——————————————————————————————————————————
     // Tag every record, score every record — no sampling, no random cutoffs.
     // This ensures no good match gets missed regardless of catalog size.
@@ -416,15 +427,20 @@ export async function POST(request) {
       .sort((a, b) => b._score - a._score);
 
     // —— Deduplicate by artwork family —————————————————————————————————————
+    // Also filter out items previously shown to the client during refinement,
+    // so Claude sees a fresh candidate pool and can actually pick different art.
+    const prevTitleSet = new Set(
+      (prevItemTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean)
+    );
     const seen = new Set();
     const candidates = [];
     for (const r of scored) {
       const key = (r.product_handle || '').replace(/-\d+$/, '');
-      if (!seen.has(key)) {
-        seen.add(key);
-        candidates.push(normalizeUrl(r));
-        if (candidates.length >= 200) break;  // top 200 unique for Claude
-      }
+      if (seen.has(key)) continue;
+      if (prevTitleSet.size > 0 && prevTitleSet.has((r.title || '').toLowerCase().trim())) continue;
+      seen.add(key);
+      candidates.push(normalizeUrl(r));
+      if (candidates.length >= 200) break;  // top 200 unique for Claude
     }
 
     // —— Stage 2: Claude selects the actual artworks ———————————————————————
