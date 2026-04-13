@@ -44,6 +44,47 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   return JSON.parse(jsonStr);
 }
 
+// ——— Feedback parsing: turn freeform refinement text into structured hints ———
+// Without this, "gritty cityscapes" just appears in the final prompt but
+// the candidate pool is still scored against the original brief. By extracting
+// add/avoid keywords from feedback, we reshape the pool itself.
+async function parseFeedbackWithClaude(feedback) {
+  if (!feedback || !feedback.trim()) return { addKeywords: [], avoidKeywords: [], tone: '' };
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const message = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 400,
+    messages: [{
+      role: 'user',
+      content: `A client is refining art recommendations. Parse their feedback into structured hints.
+
+FEEDBACK: "${feedback}"
+
+Return ONLY valid JSON (no markdown) with:
+{
+  "addKeywords": ["concrete words that should appear in matching artwork titles/descriptions — e.g. 'gritty', 'cityscape', 'skyline', 'industrial', 'concrete', 'alleyway'. Include synonyms and related concrete subjects. 6-15 words."],
+  "avoidKeywords": ["words that would disqualify an artwork based on the feedback's tone — e.g. if feedback says 'gritty cityscapes', avoid 'christmas', 'holiday', 'cheerful', 'whimsical', 'cartoon', 'pastel'. 4-10 words."],
+  "tone": "1 short phrase describing the overall mood shift"
+}`
+    }]
+  });
+
+  try {
+    let raw = message.content[0].text.trim();
+    raw = raw.replace(/^\`\`\`json?\s*/i, '').replace(/\s*\`\`\`$/i, '');
+    const parsed = JSON.parse(raw);
+    return {
+      addKeywords: Array.isArray(parsed.addKeywords) ? parsed.addKeywords : [],
+      avoidKeywords: Array.isArray(parsed.avoidKeywords) ? parsed.avoidKeywords : [],
+      tone: parsed.tone || ''
+    };
+  } catch {
+    return { addKeywords: [], avoidKeywords: [], tone: '' };
+  }
+}
+
 // ——— Stage 2: Claude selects the best artworks from candidates ——————————————
 async function selectWithClaude(candidates, brief, prevItemTitles = [], feedback = '') {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
@@ -416,6 +457,25 @@ export async function POST(request) {
 
     // TEMP DEBUG: confirm refinement inputs reach the API
     console.log('[recommend] refineFeedback:', JSON.stringify(refineFeedback), '| prevItemTitles count:', Array.isArray(prevItemTitles) ? prevItemTitles.length : 0);
+
+    // —— Feedback-aware brief augmentation ————————————————————————————————
+    // When the user refines with something like "gritty cityscapes", we parse
+    // that feedback into add/avoid keywords and merge into the brief so the
+    // *scoring stage* shifts the candidate pool, not just the final prompt.
+    let feedbackHints = { addKeywords: [], avoidKeywords: [], tone: '' };
+    if (refineFeedback && refineFeedback.trim() && hasAnthropicKey) {
+      try {
+        feedbackHints = await parseFeedbackWithClaude(refineFeedback);
+        console.log('[recommend] feedbackHints:', JSON.stringify(feedbackHints));
+      } catch (e) {
+        console.warn('Feedback parse failed:', e.message);
+      }
+      brief = {
+        ...brief,
+        searchKeywords: Array.from(new Set([...(brief.searchKeywords || []), ...feedbackHints.addKeywords])),
+        avoidTags: Array.from(new Set([...(brief.avoidTags || []), ...feedbackHints.avoidKeywords])),
+      };
+    }
 
     // —— Score the ENTIRE catalog ——————————————————————————————————————————
     // Tag every record, score every record — no sampling, no random cutoffs.
