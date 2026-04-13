@@ -97,7 +97,7 @@ Return ONLY a valid JSON array with no markdown or explanation:
 
   // CHANGE 3: Upgrade to Sonnet for better curatorial judgment
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 2500,
     messages: [{ role: 'user', content: prompt }]
   });
