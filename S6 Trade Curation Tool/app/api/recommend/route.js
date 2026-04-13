@@ -38,7 +38,9 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
     }]
   });
 
-  const jsonStr = message.content[0].text.trim();
+  let jsonStr = message.content[0].text.trim();
+  // Strip any accidental markdown fences — Haiku sometimes wraps JSON
+  jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
   return JSON.parse(jsonStr);
 }
 
@@ -95,7 +97,7 @@ Return ONLY a valid JSON array with no markdown or explanation:
 
   // CHANGE 3: Upgrade to Sonnet for better curatorial judgment
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 2500,
     messages: [{ role: 'user', content: prompt }]
   });
@@ -150,7 +152,7 @@ function parseBriefFallback(text) {
     coastal: /coastal|beach|ocean|nautical|wave|surf/,
     dramatic: /dramatic|bold|moody|dark|statement/,
     urban: /urban|city|street|industrial|skyline/,
-    southern: /southern|rustic|farmhouse|country|boho|bohemian/,
+    southern: /\b(southern|rustic|farmhouse|boho|bohemian)\b/,
   };
   const paletteMap = {
     purple: /purple|violet|lavender|plum/,
@@ -218,7 +220,7 @@ function tagRecord(r) {
   if (/vintage|retro|antique|old.?school/.test(text)) style.push('vintage');
   if (/modern|contemporary|minimal/.test(text)) style.push('modern');
   if (/coastal|beach|ocean|nautical|wave|surf|sea/.test(text)) style.push('coastal');
-  if (/floral|flower|botanical|garden|bloom/.test(text)) style.push('floral');
+  if (/floral|flower|botanical|garden|bloom|peon(y|ies)|tulip|rose|anemone|lily|daisy|orchid|bouquet|blossom/.test(text)) style.push('floral');
   if (/landscape|mountain|forest|nature|scenic/.test(text)) style.push('landscape');
   if (/typography|lettering|quote|word|phrase/.test(text)) style.push('typography');
   if (/city|urban|street|skyline|downtown/.test(text)) style.push('urban');
@@ -294,11 +296,12 @@ function scoreRecord(r, brief) {
 
     if (itemSubjects.length > 0 && !hasRequiredSubject) {
       // Item has a concrete subject (e.g. "landscape") that doesn't match
-      // any required subject (e.g. "music") — penalize it
-      score -= 6;
+      // any required subject (e.g. "music") — penalize HARD so it drops
+      // well below matching items even if colors/palette align
+      score -= 15;
     } else if (hasRequiredSubject) {
-      // Item matches a required subject — bonus on top of the style match
-      score += 4;
+      // Item matches a required subject — big bonus
+      score += 8;
     }
   }
 
