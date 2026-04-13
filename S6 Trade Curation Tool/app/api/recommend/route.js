@@ -62,10 +62,13 @@ async function parseFeedbackWithClaude(feedback) {
 
 FEEDBACK: "${feedback}"
 
+Valid subject categories: music, coastal, floral, landscape, urban, animal, southern, typography, abstract.
+
 Return ONLY valid JSON (no markdown) with:
 {
   "addKeywords": ["concrete words that should appear in matching artwork titles/descriptions — e.g. 'gritty', 'cityscape', 'skyline', 'industrial', 'concrete', 'alleyway'. Include synonyms and related concrete subjects. 6-15 words."],
-  "avoidKeywords": ["words that would disqualify an artwork based on the feedback's tone — e.g. if feedback says 'gritty cityscapes', avoid 'christmas', 'holiday', 'cheerful', 'whimsical', 'cartoon', 'pastel'. 4-10 words."],
+  "avoidKeywords": ["words that would disqualify an artwork based on the feedback's tone or subject — if feedback says 'urban scenes', avoid 'mountain', 'forest', 'woodland', 'floral', 'beach', 'landscape'. If feedback says 'gritty', avoid 'cheerful', 'christmas', 'whimsical', 'pastel'. 4-12 words."],
+  "subjectOverride": ["IF the feedback explicitly names a subject matter (like 'cityscapes', 'urban scenes', 'music art', 'coastal views'), return the matching subject categories from the list above. Otherwise return []. For 'urban scenes moody dark' return ['urban']. For 'more nature' return ['landscape']. For 'less nature more geometric' return ['abstract']."],
   "tone": "1 short phrase describing the overall mood shift"
 }`
     }]
@@ -78,10 +81,11 @@ Return ONLY valid JSON (no markdown) with:
     return {
       addKeywords: Array.isArray(parsed.addKeywords) ? parsed.addKeywords : [],
       avoidKeywords: Array.isArray(parsed.avoidKeywords) ? parsed.avoidKeywords : [],
+      subjectOverride: Array.isArray(parsed.subjectOverride) ? parsed.subjectOverride : [],
       tone: parsed.tone || ''
     };
   } catch {
-    return { addKeywords: [], avoidKeywords: [], tone: '' };
+    return { addKeywords: [], avoidKeywords: [], subjectOverride: [], tone: '' };
   }
 }
 
@@ -417,6 +421,82 @@ export async function POST(request) {
       pinnedUrls = body.pinnedUrls || [];
     }
 
+    // —— Optional: fetch moodboard URL and append extracted text to brief ——
+    // Best-effort only. ANY failure (timeout, bad URL, blocked scraper, parse
+    // error, unexpected exception) is swallowed so the recommendation flow
+    // continues unchanged. The extracted text is clearly labelled so Claude
+    // can weigh it against the explicit Jotform answers rather than being
+    // overridden by it.
+    if (moodboardUrl && typeof moodboardUrl === 'string' && moodboardUrl.trim()) {
+      try {
+        let cleanUrl = moodboardUrl.trim();
+        if (!/^https?:\/\//i.test(cleanUrl)) cleanUrl = 'https://' + cleanUrl;
+        // Validate it parses as a URL before fetching.
+        const _parsed = new URL(cleanUrl);
+        const res = await fetch(cleanUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
+            'Accept': 'text/html,application/xhtml+xml',
+          },
+          signal: AbortSignal.timeout(4000),
+          redirect: 'follow',
+        });
+        if (res.ok) {
+          const ctype = (res.headers.get('content-type') || '').toLowerCase();
+          if (ctype.includes('text/html') || ctype.includes('application/xhtml')) {
+            // Cap body read at ~500KB so a huge page can't blow up memory.
+            const rawHtml = (await res.text()).slice(0, 500_000);
+
+            const pick = (re) => {
+              const m = rawHtml.match(re);
+              return m ? m[1].trim() : '';
+            };
+            const decode = (s) => s
+              .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+
+            const title       = decode(pick(/<title[^>]*>([\s\S]*?)<\/title>/i));
+            const metaDesc    = decode(pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i));
+            const ogTitle     = decode(pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i));
+            const ogDesc      = decode(pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i));
+            const ogSiteName  = decode(pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i));
+            const twitterDesc = decode(pick(/<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["']/i));
+
+            // Collect up to 25 alt texts (good signal on Pinterest/Houzz boards).
+            const alts = [];
+            const altRe = /<img[^>]+alt=["']([^"']{3,120})["']/gi;
+            let am;
+            while ((am = altRe.exec(rawHtml)) !== null && alts.length < 25) {
+              const a = decode(am[1]).trim();
+              if (a && !/^(image|photo|picture|logo|icon)$/i.test(a)) alts.push(a);
+            }
+
+            const lines = [
+              ogSiteName && `Source: ${ogSiteName}`,
+              (ogTitle || title) && `Title: ${ogTitle || title}`,
+              (ogDesc || metaDesc || twitterDesc) && `Description: ${ogDesc || metaDesc || twitterDesc}`,
+              alts.length && `Image captions: ${alts.join(' | ')}`,
+            ].filter(Boolean);
+
+            // Only append if we actually extracted something useful.
+            const extracted = lines.join('\n').slice(0, 3000);
+            if (extracted.trim().length > 20) {
+              briefText += `\n\n--- MOODBOARD URL NOTES (source: ${cleanUrl}) ---\n${extracted}\n--- END MOODBOARD URL NOTES (treat as supplemental inspiration; Jotform answers take precedence if they conflict) ---`;
+            } else {
+              console.warn('Moodboard URL: no useful metadata extracted, skipping.');
+            }
+          } else {
+            console.warn('Moodboard URL: non-HTML content-type, skipping:', ctype);
+          }
+        } else {
+          console.warn('Moodboard URL: fetch returned', res.status);
+        }
+      } catch (e) {
+        // Swallow everything — never let a bad moodboard URL break recommendations.
+        console.warn('Moodboard URL skip:', e && e.message ? e.message : e);
+      }
+    }
+
     const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
     const store = getStore('catalog');
 
@@ -462,7 +542,7 @@ export async function POST(request) {
     // When the user refines with something like "gritty cityscapes", we parse
     // that feedback into add/avoid keywords and merge into the brief so the
     // *scoring stage* shifts the candidate pool, not just the final prompt.
-    let feedbackHints = { addKeywords: [], avoidKeywords: [], tone: '' };
+    let feedbackHints = { addKeywords: [], avoidKeywords: [], subjectOverride: [], tone: '' };
     if (refineFeedback && refineFeedback.trim() && hasAnthropicKey) {
       try {
         feedbackHints = await parseFeedbackWithClaude(refineFeedback);
@@ -470,10 +550,18 @@ export async function POST(request) {
       } catch (e) {
         console.warn('Feedback parse failed:', e.message);
       }
+      // If the feedback names an explicit subject ('urban', 'landscape', etc.),
+      // REPLACE the original subjectMustMatch with it. This is the strongest
+      // lever we have — items with a non-matching concrete subject get a
+      // -15 penalty in scoring, which effectively removes them from the pool.
+      const newSubjects = (feedbackHints.subjectOverride || [])
+        .map(s => (s || '').toLowerCase().trim())
+        .filter(s => SUBJECT_TAGS.includes(s));
       brief = {
         ...brief,
         searchKeywords: Array.from(new Set([...(brief.searchKeywords || []), ...feedbackHints.addKeywords])),
         avoidTags: Array.from(new Set([...(brief.avoidTags || []), ...feedbackHints.avoidKeywords])),
+        subjectMustMatch: newSubjects.length > 0 ? newSubjects : (brief.subjectMustMatch || []),
       };
     }
 
@@ -492,10 +580,26 @@ export async function POST(request) {
     const prevTitleSet = new Set(
       (prevItemTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean)
     );
+    // Collapse format variants: the same artwork appears as "Art Print",
+    // "Framed Art Print", "Canvas Print", etc. Strip those suffixes from the
+    // title to make a single family key, then also dedupe on the handle stem.
+    const familyKey = (r) => {
+      const t = (r.title || '')
+        .toLowerCase()
+        .replace(/\s*(framed\s+art\s+print|canvas\s+print|wood\s+wall\s+art|art\s+print|mini\s+art\s+print|metal\s+print|acrylic\s+block|wall\s+tapestry|poster|mural)\s*$/i, '')
+        .replace(/[\s\W_]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .trim();
+      const h = (r.product_handle || '')
+        .replace(/-(framed|canvas|wood|metal|acrylic|mini|poster|tapestry|mural)(-.*)?$/i, '')
+        .replace(/-\d+$/, '');
+      return t || h;
+    };
+
     const seen = new Set();
     const candidates = [];
     for (const r of scored) {
-      const key = (r.product_handle || '').replace(/-\d+$/, '');
+      const key = familyKey(r);
       if (seen.has(key)) continue;
       if (prevTitleSet.size > 0 && prevTitleSet.has((r.title || '').toLowerCase().trim())) continue;
       seen.add(key);
