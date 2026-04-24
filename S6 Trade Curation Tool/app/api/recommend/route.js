@@ -722,6 +722,34 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
     }
 
+    // —— Catalog breakdown by product category (pre-filter) ————————————————
+    // Computed on the full catalog so the UI can warn users when a filter
+    // they enabled has zero matching records (e.g., "Include throw pillows"
+    // against a wall-art-only catalog).
+    const catalogBreakdown = {
+      wallPrint: 0,
+      poster: 0,
+      canvas: 0,
+      wood: 0,
+      metal: 0,
+      acrylic: 0,
+      otherWallArt: 0,
+      pillow: 0,
+      other: 0,
+    };
+    for (const r of allRecords) {
+      const cat = productCategory(r.source_collection);
+      if (cat === 'wall-print') catalogBreakdown.wallPrint++;
+      else if (cat === 'poster') catalogBreakdown.poster++;
+      else if (cat === 'canvas') catalogBreakdown.canvas++;
+      else if (cat === 'wood') catalogBreakdown.wood++;
+      else if (cat === 'metal') catalogBreakdown.metal++;
+      else if (cat === 'acrylic') catalogBreakdown.acrylic++;
+      else if (cat === 'other-wall-art') catalogBreakdown.otherWallArt++;
+      else if (cat === 'pillow') catalogBreakdown.pillow++;
+      else catalogBreakdown.other++;
+    }
+
     // —— Product type filter (applied BEFORE tagging/scoring so the pool shrinks)
     const totalBeforeFilter = allRecords.length;
     if (productFilters) {
@@ -735,6 +763,8 @@ export async function POST(request) {
     if (totalAfterFilter === 0) {
       return NextResponse.json({
         error: 'No catalog items match the selected product types. Try loosening the Product Types filter.',
+        catalogBreakdown,
+        catalogSize: totalBeforeFilter,
       }, { status: 400 });
     }
 
@@ -941,7 +971,9 @@ export async function POST(request) {
       accent: accent.slice(0, 15),
       galleryWallSets,
       totalScored: scored.length,
-      catalogSize: allRecords.length,
+      catalogSize: totalBeforeFilter,
+      filteredSize: totalAfterFilter,
+      catalogBreakdown,
       aiPowered: hasAnthropicKey,
     });
   } catch (err) {

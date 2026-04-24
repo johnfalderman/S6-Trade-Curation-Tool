@@ -638,6 +638,24 @@ export default function HomePage() {
             <div className="text-sm font-medium text-gray-700 mb-1">Product Types</div>
             <p className="text-xs text-gray-500 mb-3">Filter which Society6 product categories are eligible for recommendations.</p>
 
+            {/* Diagnostics: warn when a filter is enabled but the catalog has zero matching items */}
+            {results?.catalogBreakdown && (() => {
+              const b = results.catalogBreakdown
+              const hints = []
+              if (includePillows && b.pillow === 0) hints.push('No throw pillows found in the current catalog — the filter has no effect until pillow rows are added.')
+              if (wallArtMode === 'posters' && b.poster === 0) hints.push('No posters found in the current catalog. Switch to All wall art or add poster rows.')
+              if (wallArtMode === 'prints' && b.wallPrint === 0) hints.push('No standard wall prints found in the current catalog. Switch to All wall art or add print rows.')
+              if (hints.length === 0) return null
+              return (
+                <div className="mb-3 bg-amber-50 border border-amber-200 rounded px-3 py-2 text-xs text-amber-800 space-y-1">
+                  {hints.map((h, i) => <div key={i}>! {h}</div>)}
+                  <div className="text-amber-600 text-[11px] pt-1">
+                    Catalog breakdown: {b.wallPrint} wall prints · {b.poster} posters · {b.canvas} canvas · {b.wood} wood · {b.pillow} pillows · {b.otherWallArt + b.metal + b.acrylic + b.other} other
+                  </div>
+                </div>
+              )
+            })()}
+
             <div className="mb-3">
               <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">Wall art format</div>
               <div className="flex flex-wrap gap-4">
