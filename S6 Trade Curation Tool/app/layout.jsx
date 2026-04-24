@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'S6 Trade Curation Tool',
-  description: 'Internal wall art curation tool for Society6 trade team',
+  title: 'Society6 Curation Tool BETA',
+  description: 'Curation tool for the Society6 trade team — wall art, pillows, and beyond',
 };
 
 export default function RootLayout({ children }) {
@@ -11,8 +11,8 @@ export default function RootLayout({ children }) {
       <body>
         <header className="bg-gray-900 text-white px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="font-bold tracking-tight text-lg">S6 Trade Curation</span>
-            <span className="text-xs bg-gray-700 px-2 py-0.5 rounded text-gray-300 font-mono">internal</span>
+            <span className="font-bold tracking-tight text-lg">Society6 Curation Tool</span>
+            <span className="text-xs bg-red-600 px-2 py-0.5 rounded text-white font-mono tracking-wider">BETA</span>
           </div>
           <nav className="flex items-center gap-6 text-sm text-gray-400">
             <a href="/" className="hover:text-white transition-colors">New Request</a>
@@ -23,7 +23,7 @@ export default function RootLayout({ children }) {
           {children}
         </main>
         <footer className="text-center text-xs text-gray-400 py-8 mt-16 border-t border-gray-200">
-          Society6 Trade Curation Tool — Internal Use Only
+          Society6 Curation Tool BETA — Internal Use Only
         </footer>
       </body>
     </html>

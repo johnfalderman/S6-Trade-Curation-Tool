@@ -161,6 +161,160 @@ Return ONLY a valid JSON array with no markdown or explanation:
   return JSON.parse(raw);
 }
 
+// ——— Find Similar: build a synthetic brief from seed product URLs ——————————
+// The hybrid approach: aggregate tags from catalog matches (cheap, deterministic)
+// then have Claude refine them into a full brief (catches nuance, expands keywords).
+// Seeds that aren't in the catalog are still included as hints for Claude but
+// don't contribute tags directly.
+async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
+  const handleOf = (url) => {
+    if (!url) return null;
+    const m = (url || '').match(/\/products\/([^?\/#]+)/);
+    return m ? m[1] : null;
+  };
+
+  const matchedSeeds = [];
+  const unmatchedUrls = [];
+  for (const url of seedUrls) {
+    const handle = handleOf(url);
+    if (!handle) { unmatchedUrls.push(url); continue; }
+    const rec = allRecords.find(r =>
+      r.product_handle === handle || (r.product_url || '').includes(handle)
+    );
+    if (rec) matchedSeeds.push(tagRecord(rec));
+    else unmatchedUrls.push(url);
+  }
+
+  // Aggregate tag frequencies from matched seeds
+  const tagCount = (field) => {
+    const counts = {};
+    for (const s of matchedSeeds) {
+      for (const tag of s[field] || []) counts[tag] = (counts[tag] || 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  };
+  const seedStyles = tagCount('style');
+  const seedPalette = tagCount('palette');
+  const seedSubjects = seedStyles.filter(s => SUBJECT_TAGS.includes(s));
+
+  // Tag-only baseline brief — used if Claude unavailable
+  const baselineBrief = {
+    projectName: 'Find Similar',
+    clientName: '',
+    location: '',
+    projectType: 'other',
+    styleTags: seedStyles.slice(0, 6),
+    paletteTags: seedPalette.slice(0, 6),
+    avoidTags: [],
+    galleryWall: false,
+    targetPieceCount: null,
+    rooms: [],
+    keyThemes: seedStyles.slice(0, 3),
+    searchKeywords: Array.from(new Set([
+      ...seedStyles,
+      ...seedPalette,
+      // Pull meaningful words from seed titles as extra scoring signal
+      ...matchedSeeds.flatMap(s => (s.title || '').toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length >= 4 && !['print','canvas','wood','framed','mini','metal','acrylic'].includes(w))
+      ),
+    ])).slice(0, 25),
+    subjectMustMatch: seedSubjects,
+    briefSummary: `Find artwork similar to ${matchedSeeds.length} seed product(s).`,
+    parsedBy: 'tag-aggregate',
+    findSimilarSeeds: matchedSeeds.length,
+    findSimilarUnmatched: unmatchedUrls.length,
+  };
+
+  if (!hasAnthropicKey || matchedSeeds.length === 0) {
+    return baselineBrief;
+  }
+
+  // Claude refinement pass — hybrid step 2
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const seedList = matchedSeeds.slice(0, 20).map((s, i) =>
+      `${i + 1}. ${s.title} | collection:${s.source_collection} | alt:${s.image_alt || ''} | styles:${(s.style||[]).join(',')} | palette:${(s.palette||[]).join(',')}`
+    ).join('\n');
+    const unmatchedList = unmatchedUrls.slice(0, 10).map(u => `- ${u}`).join('\n');
+
+    const prompt = `You are an expert art curator. A user is in "find similar" mode — they've pasted Society6 product URLs and want recommendations of artwork with a similar aesthetic.
+
+SEED PRODUCTS (matched in catalog):
+${seedList}
+
+${unmatchedList ? `SEED URLs (not in catalog — infer from slug):\n${unmatchedList}\n` : ''}
+
+Aggregated seed tags:
+- Styles seen: ${seedStyles.join(', ') || 'none'}
+- Palette seen: ${seedPalette.join(', ') || 'none'}
+- Subjects: ${seedSubjects.join(', ') || 'none'}
+
+Your job: synthesize a brief that captures the common aesthetic thread across these seeds. Go deeper than the raw tags — identify the underlying vibe (e.g. "moody urban photography with warm neutrals" vs. just "urban, warm").
+
+Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
+{
+  "styleTags": ["art style keywords reflecting the shared aesthetic — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape"],
+  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red, pink, orange"],
+  "avoidTags": ["qualities that would clash with the seed aesthetic"],
+  "keyThemes": ["3-6 short vibe phrases describing the shared mood"],
+  "searchKeywords": ["15-25 concrete words that would appear in similar artwork titles/descriptions — specific things like 'saxophone', 'cobalt', 'terracotta', 'geometric'"],
+  "subjectMustMatch": ["the 1-4 PRIMARY subject categories (from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract). If the seeds are all music-themed, this is ['music']. If mixed, include each."],
+  "briefSummary": "2-3 sentence plain English summary of the aesthetic this user is looking for"
+}`;
+
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    let raw = message.content[0].text.trim();
+    raw = raw.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+    const refined = JSON.parse(raw);
+
+    return {
+      ...baselineBrief,
+      styleTags: Array.isArray(refined.styleTags) ? refined.styleTags : baselineBrief.styleTags,
+      paletteTags: Array.isArray(refined.paletteTags) ? refined.paletteTags : baselineBrief.paletteTags,
+      avoidTags: Array.isArray(refined.avoidTags) ? refined.avoidTags : [],
+      keyThemes: Array.isArray(refined.keyThemes) ? refined.keyThemes : baselineBrief.keyThemes,
+      searchKeywords: Array.isArray(refined.searchKeywords) ? refined.searchKeywords : baselineBrief.searchKeywords,
+      subjectMustMatch: Array.isArray(refined.subjectMustMatch)
+        ? refined.subjectMustMatch.filter(s => SUBJECT_TAGS.includes((s || '').toLowerCase()))
+        : baselineBrief.subjectMustMatch,
+      briefSummary: refined.briefSummary || baselineBrief.briefSummary,
+      parsedBy: 'find-similar-claude',
+    };
+  } catch (e) {
+    console.warn('Find Similar Claude refinement failed, using tag-only brief:', e.message);
+    return baselineBrief;
+  }
+}
+
+// Merge two briefs by taking the union of list fields. The "primary" brief's
+// scalar fields (projectName, clientName, briefSummary) win. Used when user
+// provides BOTH a Jotform brief AND find-similar URLs.
+function mergeBriefs(primary, supplemental) {
+  if (!primary) return supplemental;
+  if (!supplemental) return primary;
+  const unionList = (a = [], b = []) => Array.from(new Set([...(a || []), ...(b || [])]));
+  return {
+    ...primary,
+    styleTags: unionList(primary.styleTags, supplemental.styleTags),
+    paletteTags: unionList(primary.paletteTags, supplemental.paletteTags),
+    avoidTags: unionList(primary.avoidTags, supplemental.avoidTags),
+    keyThemes: unionList(primary.keyThemes, supplemental.keyThemes),
+    searchKeywords: unionList(primary.searchKeywords, supplemental.searchKeywords),
+    subjectMustMatch: unionList(primary.subjectMustMatch, supplemental.subjectMustMatch),
+    rooms: unionList(primary.rooms, supplemental.rooms),
+    parsedBy: `${primary.parsedBy || 'unknown'}+${supplemental.parsedBy || 'unknown'}`,
+  };
+}
+
 // ——— Regex Brief Parser (fallback when no API key) ———————————————————————
 function parseBriefFallback(text) {
   if (!text) return defaultBrief();
@@ -302,6 +456,45 @@ function tagRecord(r) {
 // the artwork depicts.
 const SUBJECT_TAGS = ['music', 'coastal', 'floral', 'landscape', 'urban', 'animal', 'southern', 'typography', 'abstract'];
 
+// ——— Product type categorization —————————————————————————————————————————
+// Maps a catalog record's source_collection to a coarse product category,
+// used by the product-type filter UI (exclude wood / include pillows / wall
+// prints only / posters only). Defensive against unexpected collection names.
+function productCategory(sourceCollection) {
+  const sc = (sourceCollection || '').toLowerCase().trim();
+  if (!sc) return 'other';
+  if (/throw.?pillow|\bpillow/.test(sc)) return 'pillow';
+  if (/\bwood/.test(sc)) return 'wood';
+  if (/poster/.test(sc)) return 'poster';
+  // Paper prints: art-prints, framed-art-prints, mini-art-prints
+  if (/(^|-)((mini|framed)-)?art-prints?(-|$)/.test(sc) || sc === 'art-prints') return 'wall-print';
+  if (/canvas/.test(sc)) return 'canvas';
+  if (/metal/.test(sc)) return 'metal';
+  if (/acrylic/.test(sc)) return 'acrylic';
+  if (/tapestry|tapestries|mural/.test(sc)) return 'other-wall-art';
+  return 'other';
+}
+
+// Apply the user's product-type filters. Returns true if the record should
+// remain in the candidate pool.
+function passesProductFilters(record, filters) {
+  if (!filters) return true;
+  const cat = productCategory(record.source_collection);
+
+  // Pillows are a separate product type. Opt-in only via includePillows toggle.
+  // They bypass the wall-art format radio entirely.
+  if (cat === 'pillow') return !!filters.includePillows;
+
+  // Wall art handling ----
+  if (cat === 'wood' && filters.excludeWood) return false;
+
+  if (filters.wallArtMode === 'prints') return cat === 'wall-print';
+  if (filters.wallArtMode === 'posters') return cat === 'poster';
+
+  // 'all' (or unset): keep everything else that wasn't filtered out above
+  return true;
+}
+
 // ——— Full-catalog scoring (runs on every record) ——————————————————————————
 function scoreRecord(r, brief) {
   let score = 0;
@@ -385,6 +578,8 @@ export async function POST(request) {
     let refineFeedback = '';
     let prevItemTitles = [];
     let pinnedUrls = [];
+    let productFilters = null;
+    let findSimilarUrls = [];
 
     const contentType = request.headers.get('content-type') || '';
 
@@ -395,6 +590,8 @@ export async function POST(request) {
       refineFeedback = formData.get('refineFeedback') || '';
       try { prevItemTitles = JSON.parse(formData.get('prevItemTitles') || '[]'); } catch {}
       try { pinnedUrls = JSON.parse(formData.get('pinnedUrls') || '[]'); } catch {}
+      try { productFilters = JSON.parse(formData.get('productFilters') || 'null'); } catch {}
+      try { findSimilarUrls = JSON.parse(formData.get('findSimilarUrls') || '[]'); } catch {}
 
       const file = formData.get('moodboard');
       if (file && file.size > 0) {
@@ -419,7 +616,17 @@ export async function POST(request) {
       refineFeedback = body.refineFeedback || '';
       prevItemTitles = body.prevItemTitles || [];
       pinnedUrls = body.pinnedUrls || [];
+      productFilters = body.productFilters || null;
+      findSimilarUrls = body.findSimilarUrls || [];
     }
+
+    // Normalize findSimilarUrls: accept array or newline-separated string
+    if (typeof findSimilarUrls === 'string') {
+      findSimilarUrls = findSimilarUrls.split('\n').map(s => s.trim()).filter(Boolean);
+    }
+    findSimilarUrls = (Array.isArray(findSimilarUrls) ? findSimilarUrls : [])
+      .map(u => (u || '').trim())
+      .filter(Boolean);
 
     // —— Optional: fetch moodboard URL and append extracted text to brief ——
     // Best-effort only. ANY failure (timeout, bad URL, blocked scraper, parse
@@ -515,28 +722,75 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
     }
 
-    // —— Stage 1: Parse brief ——————————————————————————————————————————————
-    let brief;
-    if (hasAnthropicKey) {
-      try {
-        brief = await parseBriefWithClaude(briefText);
-        brief.parsedBy = 'claude';
-        if (!brief.searchKeywords)
-          brief.searchKeywords = [...(brief.styleTags || []), ...(brief.paletteTags || [])];
-        if (!brief.subjectMustMatch)
-          brief.subjectMustMatch = (brief.styleTags || []).filter(s => SUBJECT_TAGS.includes(s));
-      } catch (e) {
-        console.warn('Claude brief parse failed, using fallback:', e.message);
-        brief = parseBriefFallback(briefText);
-        brief.parsedBy = 'regex-fallback';
-      }
+    // —— Product type filter (applied BEFORE tagging/scoring so the pool shrinks)
+    const totalBeforeFilter = allRecords.length;
+    if (productFilters) {
+      allRecords = allRecords.filter(r => passesProductFilters(r, productFilters));
     } else {
-      brief = parseBriefFallback(briefText);
-      brief.parsedBy = 'regex';
+      // Default behavior when the client doesn't send filters: still exclude
+      // pillows so legacy clients keep their wall-art-only experience.
+      allRecords = allRecords.filter(r => productCategory(r.source_collection) !== 'pillow');
+    }
+    const totalAfterFilter = allRecords.length;
+    if (totalAfterFilter === 0) {
+      return NextResponse.json({
+        error: 'No catalog items match the selected product types. Try loosening the Product Types filter.',
+      }, { status: 400 });
     }
 
-    // TEMP DEBUG: confirm refinement inputs reach the API
-    console.log('[recommend] refineFeedback:', JSON.stringify(refineFeedback), '| prevItemTitles count:', Array.isArray(prevItemTitles) ? prevItemTitles.length : 0);
+    // Must have at least one signal: a brief, or find-similar seed URLs
+    const hasBriefText = !!(briefText || '').trim();
+    const hasSeeds = findSimilarUrls.length > 0;
+    if (!hasBriefText && !hasSeeds) {
+      return NextResponse.json({
+        error: 'Please provide either a Jotform brief or at least one Society6 product URL in Find Similar.',
+      }, { status: 400 });
+    }
+
+    // —— Stage 1: Parse brief ——————————————————————————————————————————————
+    let brief = null;
+    if (hasBriefText) {
+      if (hasAnthropicKey) {
+        try {
+          brief = await parseBriefWithClaude(briefText);
+          brief.parsedBy = 'claude';
+          if (!brief.searchKeywords)
+            brief.searchKeywords = [...(brief.styleTags || []), ...(brief.paletteTags || [])];
+          if (!brief.subjectMustMatch)
+            brief.subjectMustMatch = (brief.styleTags || []).filter(s => SUBJECT_TAGS.includes(s));
+        } catch (e) {
+          console.warn('Claude brief parse failed, using fallback:', e.message);
+          brief = parseBriefFallback(briefText);
+          brief.parsedBy = 'regex-fallback';
+        }
+      } else {
+        brief = parseBriefFallback(briefText);
+        brief.parsedBy = 'regex';
+      }
+    }
+
+    // —— Find Similar: build (or merge in) a synthetic brief from seed URLs ——
+    if (hasSeeds) {
+      const synthBrief = await buildBriefFromSeeds(findSimilarUrls, allRecords, hasAnthropicKey);
+      if (brief) {
+        // Brief + seeds — combine signals
+        brief = mergeBriefs(brief, synthBrief);
+        brief.findSimilarSeeds = synthBrief.findSimilarSeeds;
+        brief.findSimilarUnmatched = synthBrief.findSimilarUnmatched;
+      } else {
+        // Seed-only mode — the synth brief IS the brief
+        brief = synthBrief;
+      }
+      // Auto-include the seed URLs as pinned so the originals surface in results
+      const seedPinSet = new Set(pinnedUrls || []);
+      for (const u of findSimilarUrls) seedPinSet.add(u);
+      pinnedUrls = Array.from(seedPinSet);
+    }
+
+    if (productFilters) {
+      console.log('[recommend] product filter applied:', JSON.stringify(productFilters),
+        `| catalog ${totalBeforeFilter} -> ${totalAfterFilter}`);
+    }
 
     // —— Feedback-aware brief augmentation ————————————————————————————————
     // When the user refines with something like "gritty cityscapes", we parse

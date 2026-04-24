@@ -104,6 +104,9 @@ export default function HomePage() {
   const [slidesLoading, setSlidesLoading] = useState(false)
   const [slidesResult, setSlidesResult] = useState(null)
   const [slidesError, setSlidesError] = useState(null)
+  const [shareLoading, setShareLoading] = useState(false)
+  const [shareResult, setShareResult] = useState(null) // { url, id, itemCount }
+  const [shareError, setShareError] = useState(null)
   const [activeTab, setActiveTab] = useState('primary')
   const fileInputRef = useRef(null)
 
@@ -115,6 +118,23 @@ export default function HomePage() {
   // Pinned items
   const [pinnedUrlInput, setPinnedUrlInput] = useState('')
   const [pinnedUrls, setPinnedUrls] = useState([])
+
+  // Product type filters — controls which catalog source_collections are eligible
+  // wallArtMode: 'all' | 'prints' | 'posters'  (mutually exclusive)
+  // excludeWood: removes wooden wall art (wood-mounted prints, wood wall art)
+  // includePillows: opts throw pillows INTO the pool (excluded by default since
+  // the app has historically been wall-art-only)
+  const [wallArtMode, setWallArtMode] = useState('all')
+  const [excludeWood, setExcludeWood] = useState(false)
+  const [includePillows, setIncludePillows] = useState(false)
+
+  // Find Similar: freeform textarea of Society6 product URLs (one per line).
+  // Works standalone (no brief needed) or as a supplement to a brief. The API
+  // uses matching catalog entries as seeds, aggregates their tags, and has
+  // Claude refine them into a synthetic brief for scoring.
+  const [findSimilarInput, setFindSimilarInput] = useState('')
+  const parseFindSimilarUrls = () =>
+    findSimilarInput.split('\n').map(s => s.trim()).filter(Boolean)
 
   // Item selection for deck
   const [selectedItems, setSelectedItems] = useState(new Set())
@@ -148,7 +168,7 @@ export default function HomePage() {
   const [deckLocation, setDeckLocation] = useState('')
   const [deckDate, setDeckDate] = useState('')
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, productFilters, findSimilarUrls }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
@@ -158,12 +178,14 @@ export default function HomePage() {
       if (refineFeedback) fd.append('refineFeedback', refineFeedback)
       if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
       if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
+      if (productFilters) fd.append('productFilters', JSON.stringify(productFilters))
+      if (findSimilarUrls?.length) fd.append('findSimilarUrls', JSON.stringify(findSimilarUrls))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, productFilters, findSimilarUrls }),
       })
     }
     const data = await res.json()
@@ -180,7 +202,9 @@ export default function HomePage() {
     setSlidesError(null)
     setRefineHistory([])
     try {
-      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls })
+      const productFilters = { wallArtMode, excludeWood, includePillows }
+      const findSimilarUrls = parseFindSimilarUrls()
+      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, productFilters, findSimilarUrls })
       setResults(data)
       if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
       if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
@@ -228,6 +252,8 @@ export default function HomePage() {
         refineFeedback,
         prevItemTitles,
         pinnedUrls: mergedPinnedUrls,
+        productFilters: { wallArtMode, excludeWood, includePillows },
+        findSimilarUrls: parseFindSimilarUrls(),
       })
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
@@ -295,6 +321,126 @@ export default function HomePage() {
         .flatMap(u => [u, u.startsWith('/') ? 'https://society6.com' + u : u])
     )
     setPinnedUrls(u => (u || []).filter(x => !toRemove.has(x)))
+  }
+
+  // Client-side CSV export. All data is already in `results` + `selectedItems`,
+  // so no API round-trip is needed. The `thumbnail` column uses =IMAGE() which
+  // renders thumbnails in Google Sheets; Excel shows it as text (plain image_url
+  // column still works there). Prepends UTF-8 BOM so Excel opens it correctly.
+  function downloadCsv() {
+    if (!results) return
+    const toAbsolute = (u) => {
+      if (!u) return ''
+      return u.startsWith('/') ? 'https://society6.com' + u : u
+    }
+    const rows = []
+    const push = (item, placement) => {
+      const productUrl = toAbsolute(item.product_url)
+      const imageUrl = toAbsolute(item.image_url)
+      rows.push({
+        title: item.title || '',
+        product_url: productUrl,
+        image_url: imageUrl,
+        thumbnail: imageUrl ? `=IMAGE("${imageUrl}")` : '',
+        style: (item.style || []).join(', '),
+        palette: (item.palette || []).join(', '),
+        source_collection: item.source_collection || '',
+        placement,
+        reason: item.reason || '',
+      })
+    }
+    ;(results.primary || [])
+      .filter(i => selectedItems.has(i.product_url))
+      .forEach(i => push(i, 'Primary'))
+    ;(results.accent || [])
+      .filter(i => selectedItems.has(i.product_url))
+      .forEach(i => push(i, 'Accent'))
+    ;(results.galleryWallSets || []).forEach(set => {
+      (set.items || [])
+        .filter(i => selectedItems.has(i.product_url))
+        .forEach(i => push(i, `Gallery Wall #${set.setNumber}`))
+    })
+
+    if (rows.length === 0) {
+      setSlidesError('Nothing selected to export. Select at least one item above.')
+      return
+    }
+
+    const headers = ['title', 'product_url', 'image_url', 'thumbnail', 'style', 'palette', 'source_collection', 'placement', 'reason']
+    const escape = (v) => {
+      const s = String(v ?? '')
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+      return s
+    }
+    const csv = [
+      headers.join(','),
+      ...rows.map(r => headers.map(h => escape(r[h])).join(','))
+    ].join('\n')
+
+    const safeName = (deckProjectName || results.brief?.projectName || 'S6-Curation')
+      .replace(/[^a-z0-9-]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'S6-Curation'
+    const filename = `${safeName}-${new Date().toISOString().slice(0, 10)}.csv`
+
+    // BOM ensures Excel reads UTF-8 titles correctly
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    setSlidesError(null)
+    setSlidesResult({ filename })
+  }
+
+  // Create a shareable /share/[id] URL. Stores the currently selected curation
+  // in Netlify Blobs under a short random ID, copies the URL to clipboard,
+  // and surfaces it for the user to share manually.
+  async function handleShare() {
+    if (!results) return
+    setShareLoading(true)
+    setShareError(null)
+    setShareResult(null)
+    try {
+      const payload = {
+        brief: {
+          ...results.brief,
+          ...(deckClientName && { clientName: deckClientName }),
+          ...(deckProjectName && { projectName: deckProjectName }),
+          ...(deckLocation && { location: deckLocation }),
+        },
+        primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
+        accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
+        galleryWallSets: (results.galleryWallSets || []).map(s => ({
+          ...s,
+          items: (s.items || []).filter(i => selectedItems.has(i.product_url)),
+        })).filter(s => s.items.length > 0),
+      }
+      const res = await fetch('/api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) throw new Error(data.error || 'Failed to create share')
+
+      const shareUrl = `${window.location.origin}/share/${data.id}`
+      try {
+        await navigator.clipboard.writeText(shareUrl)
+      } catch {
+        // Clipboard API may be blocked (http contexts, permissions). Fall back
+        // silently; the user can still copy the URL from the displayed input.
+      }
+      setShareResult({ url: shareUrl, id: data.id, itemCount: data.itemCount })
+    } catch (err) {
+      setShareError(err.message)
+    } finally {
+      setShareLoading(false)
+    }
   }
 
   async function handleGenerateSlides() {
@@ -373,13 +519,16 @@ export default function HomePage() {
       {/* -- Intake Form -- */}
       <div className="mb-10">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">New Curation Request</h1>
-        <p className="text-gray-500 text-sm mb-6">Paste a Jotform submission below to generate wall art recommendations.</p>
+        <p className="text-gray-500 text-sm mb-6">Paste a Jotform brief, paste Society6 URLs to find similar items, or combine both.</p>
 
         <form onSubmit={handleGenerate} className="space-y-4">
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-sm font-medium text-gray-700">Jotform Submission Text</label>
+              <label className="text-sm font-medium text-gray-700">
+                Jotform Submission Text
+                {parseFindSimilarUrls().length > 0 && <span className="text-gray-400 font-normal"> (optional when using Find Similar)</span>}
+              </label>
               <button type="button" onClick={handleUseSample} className="text-xs text-gray-400 hover:text-gray-600 underline">
                 Load sample brief
               </button>
@@ -390,7 +539,6 @@ export default function HomePage() {
               placeholder="Paste the full Jotform response here..."
               rows={10}
               className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-gray-400"
-              required
             />
           </div>
 
@@ -463,13 +611,94 @@ export default function HomePage() {
             )}
           </div>
 
+          {/* Find Similar — seed by product URLs */}
+          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-sm font-medium text-gray-800">Find Similar <span className="text-xs font-normal text-purple-600">(beta)</span></div>
+              {parseFindSimilarUrls().length > 0 && (
+                <span className="text-xs text-purple-700 bg-white border border-purple-300 rounded px-2 py-0.5">
+                  {parseFindSimilarUrls().length} URL{parseFindSimilarUrls().length === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-600 mb-2">
+              Paste Society6 product URLs (one per line) to find artwork with a similar aesthetic. Works on its own or combined with a brief. Pasted products are included in the results.
+            </p>
+            <textarea
+              value={findSimilarInput}
+              onChange={e => setFindSimilarInput(e.target.value)}
+              placeholder={'https://society6.com/product/your-seed-product-1\nhttps://society6.com/product/your-seed-product-2'}
+              rows={3}
+              className="w-full border border-purple-200 rounded-lg p-2.5 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-purple-300 bg-white"
+            />
+          </div>
+
+          {/* Product type filters */}
+          <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+            <div className="text-sm font-medium text-gray-700 mb-1">Product Types</div>
+            <p className="text-xs text-gray-500 mb-3">Filter which Society6 product categories are eligible for recommendations.</p>
+
+            <div className="mb-3">
+              <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">Wall art format</div>
+              <div className="flex flex-wrap gap-4">
+                {[
+                  { value: 'all', label: 'All wall art' },
+                  { value: 'prints', label: 'Wall prints only' },
+                  { value: 'posters', label: 'Posters only' },
+                ].map(opt => (
+                  <label key={opt.value} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="wallArtMode"
+                      value={opt.value}
+                      checked={wallArtMode === opt.value}
+                      onChange={() => setWallArtMode(opt.value)}
+                      className="accent-gray-900"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-1">&quot;Wall prints&quot; = standard / framed / mini art prints. Mutually exclusive with Posters.</p>
+            </div>
+
+            <div className="flex flex-wrap gap-x-6 gap-y-2 pt-2 border-t border-gray-200">
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={excludeWood}
+                  onChange={e => setExcludeWood(e.target.checked)}
+                  className="accent-gray-900"
+                />
+                Exclude wooden wall art
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includePillows}
+                  onChange={e => setIncludePillows(e.target.checked)}
+                  className="accent-gray-900"
+                />
+                Include throw pillows
+              </label>
+            </div>
+          </div>
+
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm">{error}</div>
           )}
 
           <div className="flex items-center gap-3">
-            <button type="submit" disabled={loading || !briefText.trim()} className="btn-primary">
-              {loading ? 'Generating...' : 'Generate Recommendations'}
+            <button
+              type="submit"
+              disabled={loading || (!briefText.trim() && parseFindSimilarUrls().length === 0)}
+              className="btn-primary"
+            >
+              {loading
+                ? 'Generating...'
+                : (!briefText.trim() && parseFindSimilarUrls().length > 0)
+                  ? 'Find Similar Items'
+                  : 'Generate Recommendations'}
             </button>
             {results && (
               <span className="text-sm text-gray-500">
@@ -715,6 +944,12 @@ export default function HomePage() {
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent">
                 {slidesLoading ? 'Building deck...' : 'Generate Slides Deck'}
               </button>
+              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Thumbnails render in Google Sheets via =IMAGE(); Excel shows image URLs.">
+                Download CSV
+              </button>
+              <button onClick={handleShare} disabled={shareLoading} className="btn-secondary" title="Create a shareable link to these curated results.">
+                {shareLoading ? 'Creating link...' : 'Share Results'}
+              </button>
             </div>
 
             {slidesResult && (
@@ -727,6 +962,47 @@ export default function HomePage() {
             {slidesError && (
               <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
                 <div className="text-sm text-red-700">Error: {slidesError}</div>
+              </div>
+            )}
+
+            {shareResult && (
+              <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="text-sm font-medium text-blue-900 mb-2">
+                  Shareable link created · {shareResult.itemCount} items
+                </div>
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    readOnly
+                    value={shareResult.url}
+                    onClick={e => e.target.select()}
+                    className="flex-1 border border-blue-200 rounded bg-white px-3 py-2 text-sm text-gray-700 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(shareResult.url) } catch {}
+                    }}
+                    className="text-sm border border-blue-300 text-blue-700 rounded px-3 py-2 hover:bg-blue-100"
+                  >
+                    Copy
+                  </button>
+                  <a
+                    href={shareResult.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm bg-blue-600 text-white rounded px-3 py-2 hover:bg-blue-700"
+                  >
+                    Open
+                  </a>
+                </div>
+                <p className="text-xs text-blue-700 mt-2">Link copied to clipboard. Anyone with the URL can view these results.</p>
+              </div>
+            )}
+
+            {shareError && (
+              <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="text-sm text-red-700">Share error: {shareError}</div>
               </div>
             )}
           </div>
