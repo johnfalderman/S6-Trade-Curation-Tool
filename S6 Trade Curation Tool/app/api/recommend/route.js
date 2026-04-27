@@ -24,7 +24,7 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "clientName": "look for 'Company Name', 'Client Name', 'Property Name', 'Business Name', or 'Company' label. Use value exactly.",
   "location": "city and state/country (look for Location, City, Address, or any geographic reference)",
   "projectType": "hotel|restaurant|vacation_rental|office|other",
-  "styleTags": ["art style keywords — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic"],
+  "styleTags": ["art style keywords — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, food-drink, monochrome, illustration"],
   "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red"],
   "avoidTags": ["things to explicitly avoid — e.g. floral, kids, landscape, typography, abstract, dark, bright, pastel"],
   "galleryWall": true or false,
@@ -32,7 +32,7 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
   "keyThemes": ["3-6 short vibe phrases — e.g. 'jazz club atmosphere', 'coastal modern', 'dark moody', 'music venue', 'southern charm'"],
   "rooms": ["room types mentioned"],
   "searchKeywords": ["15-25 individual words that describe artwork fitting this brief — very specific words like 'saxophone', 'vinyl', 'turntable', 'cobalt', 'terracotta', 'geometric' — that would match artwork titles or descriptions"],
-  "subjectMustMatch": ["the 2-5 PRIMARY subject categories this brief is about — e.g. 'music', 'urban', 'coastal'. These are the non-negotiable themes. An artwork that doesn't relate to ANY of these subjects is a bad recommendation, even if the colors and mood are right."],
+  "subjectMustMatch": ["the 2-5 PRIMARY subject categories this brief is about — e.g. 'music', 'urban', 'coastal', 'food-drink', 'monochrome'. These are the non-negotiable themes. An artwork that doesn't relate to ANY of these subjects is a bad recommendation, even if the colors and mood are right."],
   "briefSummary": "2-3 sentence plain English summary of what this client needs"
 }`
     }]
@@ -62,7 +62,7 @@ async function parseFeedbackWithClaude(feedback) {
 
 FEEDBACK: "${feedback}"
 
-Valid subject categories: music, coastal, floral, landscape, urban, animal, southern, typography, abstract.
+Valid subject categories: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome.
 
 Return ONLY valid JSON (no markdown) with:
 {
@@ -161,12 +161,148 @@ Return ONLY a valid JSON array with no markdown or explanation:
   return JSON.parse(raw);
 }
 
+// ——— Vision analysis: fetch seed images and have Claude describe them ————————
+// This is the highest-quality signal for Find Similar. Instead of relying on
+// Society6's inconsistent text metadata, we send the actual product images to
+// Claude Vision and get back rich descriptions of style, palette, subject,
+// mood, and composition.
+async function analyzeImagesWithVision(imageUrls, hasAnthropicKey) {
+  if (!hasAnthropicKey || imageUrls.length === 0) return null;
+
+  // Fetch images as base64 (concurrently, with timeouts)
+  const imageResults = await Promise.allSettled(
+    imageUrls.slice(0, 8).map(async (url) => {
+      const fullUrl = url.startsWith('/') ? 'https://society6.com' + url : url;
+      const res = await fetch(fullUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
+          'Accept': 'image/*',
+        },
+        signal: AbortSignal.timeout(6000),
+        redirect: 'follow',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const contentType = res.headers.get('content-type') || 'image/jpeg';
+      const mediaType = contentType.split(';')[0].trim();
+      const buffer = await res.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+      return { base64, mediaType, url: fullUrl };
+    })
+  );
+
+  const images = imageResults
+    .filter(r => r.status === 'fulfilled')
+    .map(r => r.value);
+
+  if (images.length === 0) {
+    console.warn('Vision analysis: no images could be fetched');
+    return null;
+  }
+
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    // Build the content array with images + text prompt
+    const content = [];
+    for (const img of images) {
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: img.mediaType,
+          data: img.base64,
+        },
+      });
+    }
+
+    content.push({
+      type: 'text',
+      text: `You are an expert art curator analyzing ${images.length} artwork image(s) from Society6. A user wants to find MORE artwork like these.
+
+Look at each image carefully and identify the common aesthetic thread. Analyze:
+- The ACTUAL visual content: what is depicted? (cocktails, landscapes, faces, abstract shapes, animals, etc.)
+- The artistic STYLE: is it a line drawing? watercolor? photograph? digital illustration? oil painting? minimal? maximalist?
+- The COLOR PALETTE: what specific colors dominate? Is it monochrome/black-and-white? Muted? Vibrant? Earth tones?
+- The MOOD: playful? sophisticated? moody? whimsical? elegant? gritty? serene?
+- The COMPOSITION: simple/centered? busy/collage? geometric? organic?
+
+Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
+{
+  "styleTags": ["5-10 art style keywords reflecting what you SEE — choose from and add to: modern, vintage, retro, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape, illustration, line-art, watercolor, pop-art, mid-century, art-deco, food-drink, monochrome, whimsical, elegant, graphic, hand-drawn, ink, sketch, folk-art, tropical, celestial, anatomical, architectural"],
+  "paletteTags": ["3-8 specific color keywords from what you SEE — e.g. black, white, bw, neutral, blue, navy, teal, green, sage, red, burgundy, orange, terracotta, pink, blush, purple, gold, metallic, warm, cool, earthy, muted, pastel, vibrant"],
+  "avoidTags": ["qualities that would clearly CLASH with this aesthetic — e.g. if seeds are minimal b&w line art, avoid 'vibrant', 'colorful', 'photographic', 'busy'"],
+  "keyThemes": ["4-6 short vibe phrases describing the shared visual identity — be specific, like 'vintage cocktail illustration' or 'moody black-and-white ink drawings' rather than generic 'nice art'"],
+  "searchKeywords": ["20-30 concrete words that would appear in SIMILAR artwork titles, descriptions, or alt text — be very specific: 'cocktail', 'martini', 'wine', 'bar', 'cheers', 'ink', 'sketch', 'line-drawing', 'botanical', 'anatomy', etc. These are used to search the catalog, so think about what words Society6 artists would use in their titles."],
+  "subjectMustMatch": ["1-4 PRIMARY subject categories from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome. 'food-drink' = cocktails, wine, coffee, bar art, culinary. 'monochrome' = black-and-white, ink, line drawings."],
+  "briefSummary": "2-3 sentence plain English summary of the visual aesthetic these images share, written as if briefing a curator to find more like this"
+}`
+    });
+
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content }],
+    });
+
+    let raw = message.content[0].text.trim();
+    raw = raw.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+    const analysis = JSON.parse(raw);
+    console.log('[vision] Analysis complete for', images.length, 'images:', analysis.briefSummary);
+    return analysis;
+  } catch (e) {
+    console.warn('Vision analysis failed:', e.message);
+    return null;
+  }
+}
+
+// Attempt to get a product image URL from a Society6 product page.
+// For catalog-matched seeds we already have image_url; for unmatched seeds
+// we scrape the product page's Open Graph image tag.
+async function fetchOgImage(productUrl) {
+  try {
+    const fullUrl = productUrl.startsWith('/') ? 'https://society6.com' + productUrl : productUrl;
+    const res = await fetch(fullUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
+        'Accept': 'text/html',
+      },
+      signal: AbortSignal.timeout(5000),
+      redirect: 'follow',
+    });
+    if (!res.ok) return null;
+    const html = (await res.text()).slice(0, 200_000);
+    const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 // ——— Find Similar: build a synthetic brief from seed product URLs ——————————
 // The hybrid approach: aggregate tags from catalog matches (cheap, deterministic)
-// then have Claude refine them into a full brief (catches nuance, expands keywords).
-// Seeds that aren't in the catalog are still included as hints for Claude but
-// don't contribute tags directly.
+// then have Claude VISION analyze the actual images (catches everything text misses).
+// Falls back to text-only analysis if images can't be fetched.
 async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
+  // Strip Society6 format suffixes from a product handle so that
+  // "cheers-vintage-cocktails_framed-art-print" becomes
+  // "cheers-vintage-cocktails". The catalog often stores the base handle
+  // without the format qualifier.
+  const FORMAT_SUFFIXES = [
+    'framed-art-print', 'art-print', 'mini-art-print', 'canvas-print',
+    'wood-wall-art', 'metal-print', 'acrylic-block', 'poster',
+    'wall-tapestry', 'throw-pillow', 'wall-mural',
+  ];
+  const stripFormatSuffix = (handle) => {
+    if (!handle) return handle;
+    for (const suffix of FORMAT_SUFFIXES) {
+      if (handle.endsWith('_' + suffix) || handle.endsWith('-' + suffix)) {
+        return handle.slice(0, -(suffix.length + 1));
+      }
+    }
+    return handle;
+  };
+
   const handleOf = (url) => {
     if (!url) return null;
     const m = (url || '').match(/\/products\/([^?\/#]+)/);
@@ -176,10 +312,16 @@ async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
   const matchedSeeds = [];
   const unmatchedUrls = [];
   for (const url of seedUrls) {
-    const handle = handleOf(url);
-    if (!handle) { unmatchedUrls.push(url); continue; }
+    const rawHandle = handleOf(url);
+    if (!rawHandle) { unmatchedUrls.push(url); continue; }
+    const baseHandle = stripFormatSuffix(rawHandle);
+
+    // Try exact match first, then base handle, then substring
     const rec = allRecords.find(r =>
-      r.product_handle === handle || (r.product_url || '').includes(handle)
+      r.product_handle === rawHandle ||
+      r.product_handle === baseHandle ||
+      (r.product_url || '').includes(rawHandle) ||
+      (r.product_url || '').includes(baseHandle)
     );
     if (rec) matchedSeeds.push(tagRecord(rec));
     else unmatchedUrls.push(url);
@@ -196,6 +338,17 @@ async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
   const seedStyles = tagCount('style');
   const seedPalette = tagCount('palette');
   const seedSubjects = seedStyles.filter(s => SUBJECT_TAGS.includes(s));
+
+  // Extract meaningful words from unmatched URL slugs as a scoring signal.
+  // e.g. "cheers-vintage-cocktails" → ['cheers', 'vintage', 'cocktails']
+  const unmatchedSlugWords = unmatchedUrls.flatMap(u => {
+    const m = u.match(/\/products\/([^?\/#]+)/);
+    if (!m) return [];
+    return stripFormatSuffix(m[1])
+      .replace(/[-_]+/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 4 && !['print','canvas','wood','framed','mini','metal','acrylic','poster','tapestry','pillow','mural','block'].includes(w));
+  });
 
   // Tag-only baseline brief — used if Claude unavailable
   const baselineBrief = {
@@ -219,7 +372,9 @@ async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
         .split(/\s+/)
         .filter(w => w.length >= 4 && !['print','canvas','wood','framed','mini','metal','acrylic'].includes(w))
       ),
-    ])).slice(0, 25),
+      // Also include words from unmatched URL slugs
+      ...unmatchedSlugWords,
+    ])).slice(0, 30),
     subjectMustMatch: seedSubjects,
     briefSummary: `Find artwork similar to ${matchedSeeds.length} seed product(s).`,
     parsedBy: 'tag-aggregate',
@@ -227,11 +382,58 @@ async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
     findSimilarUnmatched: unmatchedUrls.length,
   };
 
-  if (!hasAnthropicKey || matchedSeeds.length === 0) {
+  if (!hasAnthropicKey || (matchedSeeds.length === 0 && unmatchedUrls.length === 0)) {
     return baselineBrief;
   }
 
-  // Claude refinement pass — hybrid step 2
+  // —— Step 2a: Vision analysis (primary signal) ——————————————————————————
+  // Fetch actual product images and have Claude look at them. This is far
+  // more accurate than text metadata because Society6 tagging is inconsistent.
+  // Collect image URLs: matched seeds have image_url in the catalog record;
+  // unmatched seeds need their OG image scraped from the product page.
+  const imageUrls = [];
+  for (const s of matchedSeeds.slice(0, 6)) {
+    if (s.image_url) imageUrls.push(s.image_url);
+  }
+  // For unmatched seeds, try to scrape the OG image from the product page
+  if (unmatchedUrls.length > 0) {
+    const ogResults = await Promise.allSettled(
+      unmatchedUrls.slice(0, 4).map(fetchOgImage)
+    );
+    for (const r of ogResults) {
+      if (r.status === 'fulfilled' && r.value) imageUrls.push(r.value);
+    }
+  }
+
+  let visionAnalysis = null;
+  if (imageUrls.length > 0) {
+    visionAnalysis = await analyzeImagesWithVision(imageUrls, hasAnthropicKey);
+  }
+
+  // If vision succeeded, use it as the primary signal (much richer than text tags)
+  if (visionAnalysis) {
+    return {
+      ...baselineBrief,
+      styleTags: Array.isArray(visionAnalysis.styleTags) ? visionAnalysis.styleTags : baselineBrief.styleTags,
+      paletteTags: Array.isArray(visionAnalysis.paletteTags) ? visionAnalysis.paletteTags : baselineBrief.paletteTags,
+      avoidTags: Array.isArray(visionAnalysis.avoidTags) ? visionAnalysis.avoidTags : [],
+      keyThemes: Array.isArray(visionAnalysis.keyThemes) ? visionAnalysis.keyThemes : baselineBrief.keyThemes,
+      // Merge vision keywords with text-derived keywords for maximum coverage
+      searchKeywords: Array.from(new Set([
+        ...(Array.isArray(visionAnalysis.searchKeywords) ? visionAnalysis.searchKeywords : []),
+        ...baselineBrief.searchKeywords,
+      ])).slice(0, 40),
+      subjectMustMatch: Array.isArray(visionAnalysis.subjectMustMatch)
+        ? visionAnalysis.subjectMustMatch.filter(s => SUBJECT_TAGS.includes((s || '').toLowerCase()))
+        : baselineBrief.subjectMustMatch,
+      briefSummary: visionAnalysis.briefSummary || baselineBrief.briefSummary,
+      parsedBy: 'find-similar-vision',
+    };
+  }
+
+  // —— Step 2b: Text-only Claude fallback (if vision failed) ——————————————
+  // Falls back to the old approach: analyze text metadata only.
+  console.warn('Vision analysis unavailable, falling back to text-only Claude analysis');
   try {
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -239,14 +441,21 @@ async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
     const seedList = matchedSeeds.slice(0, 20).map((s, i) =>
       `${i + 1}. ${s.title} | collection:${s.source_collection} | alt:${s.image_alt || ''} | styles:${(s.style||[]).join(',')} | palette:${(s.palette||[]).join(',')}`
     ).join('\n');
-    const unmatchedList = unmatchedUrls.slice(0, 10).map(u => `- ${u}`).join('\n');
+    const unmatchedList = unmatchedUrls.slice(0, 10).map(u => {
+      const slugMatch = u.match(/\/products\/([^?\/#]+)/);
+      if (slugMatch) {
+        const words = stripFormatSuffix(slugMatch[1])
+          .replace(/[-_]+/g, ' ')
+          .trim();
+        return `- ${u} (inferred from slug: "${words}")`;
+      }
+      return `- ${u}`;
+    }).join('\n');
 
     const prompt = `You are an expert art curator. A user is in "find similar" mode — they've pasted Society6 product URLs and want recommendations of artwork with a similar aesthetic.
 
-SEED PRODUCTS (matched in catalog):
-${seedList}
-
-${unmatchedList ? `SEED URLs (not in catalog — infer from slug):\n${unmatchedList}\n` : ''}
+${seedList ? `SEED PRODUCTS (matched in catalog):\n${seedList}\n` : '(No seeds matched the catalog — use the URL slugs below to infer the aesthetic.)\n'}
+${unmatchedList ? `SEED URLs (not in catalog — infer aesthetic from slug keywords):\n${unmatchedList}\n` : ''}
 
 Aggregated seed tags:
 - Styles seen: ${seedStyles.join(', ') || 'none'}
@@ -257,12 +466,12 @@ Your job: synthesize a brief that captures the common aesthetic thread across th
 
 Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
 {
-  "styleTags": ["art style keywords reflecting the shared aesthetic — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape"],
-  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red, pink, orange"],
+  "styleTags": ["art style keywords reflecting the shared aesthetic — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape, food-drink, monochrome, illustration"],
+  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red, pink, orange, bw, white"],
   "avoidTags": ["qualities that would clash with the seed aesthetic"],
   "keyThemes": ["3-6 short vibe phrases describing the shared mood"],
-  "searchKeywords": ["15-25 concrete words that would appear in similar artwork titles/descriptions — specific things like 'saxophone', 'cobalt', 'terracotta', 'geometric'"],
-  "subjectMustMatch": ["the 1-4 PRIMARY subject categories (from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract). If the seeds are all music-themed, this is ['music']. If mixed, include each."],
+  "searchKeywords": ["15-25 concrete words that would appear in similar artwork titles/descriptions — specific things like 'saxophone', 'cobalt', 'terracotta', 'geometric', 'cocktail', 'martini'"],
+  "subjectMustMatch": ["the 1-4 PRIMARY subject categories (from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome). If the seeds are all music-themed, this is ['music']. If mixed, include each. 'food-drink' covers cocktails, wine, coffee, bar art, kitchen/dining themes. 'monochrome' covers black-and-white line drawings, ink art, etc."],
   "briefSummary": "2-3 sentence plain English summary of the aesthetic this user is looking for"
 }`;
 
@@ -423,8 +632,8 @@ function tagRecord(r) {
   if (/jazz|blues|rock|hip.?hop|music|band|concert|vinyl|instrument|guitar|piano|trumpet|saxophone|drum|melody|musician|album|lyric|rhythm|record|boombox|microphone|turntable/.test(text)) style.push('music');
   if (/abstract|geometric|expressionist|generative|surreal/.test(text)) style.push('abstract');
   if (/photo|photograph/.test(text)) style.push('photography');
-  if (/illustrat|drawing|sketch/.test(text)) style.push('illustration');
-  if (/vintage|retro|antique|old.?school/.test(text)) style.push('vintage');
+  if (/illustrat|drawing|sketch|line.?art|line.?draw|hand.?drawn|ink|doodle|cartoon/.test(text)) style.push('illustration');
+  if (/vintage|retro|antique|old.?school|classic|mid.?century/.test(text)) style.push('vintage');
   if (/modern|contemporary|minimal/.test(text)) style.push('modern');
   if (/coastal|beach|ocean|nautical|wave|surf|sea/.test(text)) style.push('coastal');
   if (/floral|flower|botanical|garden|bloom|peon(y|ies)|tulip|rose|anemone|lily|daisy|orchid|bouquet|blossom/.test(text)) style.push('floral');
@@ -435,17 +644,23 @@ function tagRecord(r) {
   if (/dark|moody|noir|dramatic|bold|gritty/.test(text)) style.push('dramatic');
   if (/southern|rustic|farmhouse|country|boho|bohemian/.test(text)) style.push('southern');
   if (/watercolor|pastel|soft|airy|light|bright|spring/.test(text)) style.push('light');
+  // Food, drink, cocktail, bar — common trade brief subjects
+  if (/cocktail|drink|wine|beer|bar\b|martini|whiskey|bourbon|champagne|toast|cheers|liquor|spirits|coffee|cafe|latte|espresso|food|culinary|kitchen|dining|chef|recipe|restaurant/.test(text)) style.push('food-drink');
+  // Black-and-white / monochrome aesthetic
+  if (/\bb&w\b|black.?and.?white|monochrome|monochromatic|greyscale|grayscale|ink.?draw/.test(text)) style.push('monochrome');
 
   if (/purple|violet|lavender|plum|amethyst/.test(text)) palette.push('purple');
   if (/blue|navy|teal|indigo|cobalt/.test(text)) palette.push('blue');
   if (/green|sage|olive|forest|emerald/.test(text)) palette.push('green');
   if (/black|dark|charcoal|ebony|noir|onyx/.test(text)) palette.push('black');
+  if (/\bb&w\b|black.?and.?white|monochrome|monochromatic/.test(text)) palette.push('bw');
   if (/gold|silver|metallic|brass|bronze|gilded/.test(text)) palette.push('metallic');
   if (/red|crimson|burgundy|wine|maroon/.test(text)) palette.push('red');
   if (/orange|terracotta|rust|amber|burnt/.test(text)) palette.push('orange');
   if (/pink|blush|rose|coral|magenta/.test(text)) palette.push('pink');
   if (/neutral|beige|ivory|cream|tan|linen/.test(text)) palette.push('neutral');
   if (/warm|earthy|earth.?tone|sienna|ochre/.test(text)) palette.push('warm');
+  if (/white|clean|crisp|minimal/.test(text)) palette.push('white');
 
   return { ...r, style, palette };
 }
@@ -454,7 +669,7 @@ function tagRecord(r) {
 // These are "concrete subject" tags. Mood/aesthetic tags like 'dramatic' and
 // 'modern' are excluded because they describe HOW something looks, not WHAT
 // the artwork depicts.
-const SUBJECT_TAGS = ['music', 'coastal', 'floral', 'landscape', 'urban', 'animal', 'southern', 'typography', 'abstract'];
+const SUBJECT_TAGS = ['music', 'coastal', 'floral', 'landscape', 'urban', 'animal', 'southern', 'typography', 'abstract', 'food-drink', 'monochrome'];
 
 // ——— Product type categorization —————————————————————————————————————————
 // Maps a catalog record's source_collection to a coarse product category,

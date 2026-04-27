@@ -737,7 +737,13 @@ export default function HomePage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="section-header mb-0">Parsed Brief</h2>
               {brief.parsedBy === 'claude' && (
-                <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">OK AI-parsed</span>
+                <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">AI-parsed</span>
+              )}
+              {brief.parsedBy === 'find-similar-vision' && (
+                <span className="text-xs text-purple-600 bg-purple-50 border border-purple-200 rounded px-2 py-0.5">Vision-analyzed</span>
+              )}
+              {brief.parsedBy === 'find-similar-claude' && (
+                <span className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-0.5">Text-analyzed</span>
               )}
             </div>
             {refineHistory.length > 0 && (
