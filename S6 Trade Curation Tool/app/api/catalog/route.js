@@ -8,7 +8,19 @@ export async function GET() {
   try {
     const store = getStore(BLOB_STORE);
     const meta = await store.get('meta', { type: 'json' }).catch(() => null);
-    if (meta) return NextResponse.json(meta);
+    if (meta) {
+      // Augment with vision-enrichment status so the UI can render
+      // "X of Y enriched" without an extra round-trip to /api/catalog/enrich.
+      const enrichMeta = await store.get('enrichment-meta', { type: 'json' }).catch(() => null);
+      return NextResponse.json({
+        ...meta,
+        enrichment: enrichMeta || {
+          enrichedCount: 0,
+          totalRecords: meta.count || 0,
+          status: 'idle',
+        },
+      });
+    }
   } catch (e) {
     // fall through to lib/catalog
   }
@@ -49,6 +61,20 @@ export async function POST(request) {
     const store = getStore(BLOB_STORE);
     await store.set('records', JSON.stringify(records));
     await store.set('meta', JSON.stringify({ source: 'real', count: records.length, loadedAt: new Date().toISOString() }));
+    // Reset enrichment progress — a new catalog upload invalidates any
+    // previously-tracked vision enrichment state. Records themselves carry
+    // their `visionStyle` fields, so re-uploading the same CSV won't lose
+    // existing enrichment if the records still match.
+    await store.set('enrichment-meta', JSON.stringify({
+      totalRecords: records.length,
+      enrichedCount: 0,
+      lastProcessedIndex: 0,
+      status: 'idle',
+      updatedAt: new Date().toISOString(),
+    })).catch(() => {});
+    // Clear the sample buffer too — old samples reference rows from the
+    // previous catalog and would be misleading after a fresh upload.
+    await store.set('enrichment-samples', JSON.stringify([])).catch(() => {});
 
     return NextResponse.json({
       success: true,

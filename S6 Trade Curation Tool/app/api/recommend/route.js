@@ -711,11 +711,40 @@ function passesProductFilters(record, filters) {
 }
 
 // ——— Full-catalog scoring (runs on every record) ——————————————————————————
+// Vision-aware: when a record has been enriched by /api/catalog/enrich, its
+// visionStyle / visionPalette / visionSubject / visionKeywords fields override
+// or augment the regex-derived tags. Records without vision data fall back to
+// the original tagRecord() output, so partial enrichment works fine.
 function scoreRecord(r, brief) {
   let score = 0;
-  const text = `${r.title || ''} ${r.image_alt || ''} ${r.product_handle || ''}`.toLowerCase();
-  const style = r.style || [];
-  const palette = r.palette || [];
+  const baseText = `${r.title || ''} ${r.image_alt || ''} ${r.product_handle || ''}`.toLowerCase();
+
+  const regexStyle = r.style || [];
+  const regexPalette = r.palette || [];
+  const visionStyle = Array.isArray(r.visionStyle) ? r.visionStyle : [];
+  const visionPalette = Array.isArray(r.visionPalette) ? r.visionPalette : [];
+  const visionSubject = Array.isArray(r.visionSubject) ? r.visionSubject : null;
+  const visionKeywords = Array.isArray(r.visionKeywords) ? r.visionKeywords : [];
+  const visionSummary = typeof r.visionSummary === 'string' ? r.visionSummary.toLowerCase() : '';
+
+  // For keyword matching, fold vision keywords + summary into the searchable
+  // text. This is where vision earns its keep — Society6 titles are sparse,
+  // but a vision-enriched record also carries words like "cocktail", "ink",
+  // "saxophone" pulled directly from the image.
+  const text = (visionKeywords.length > 0 || visionSummary)
+    ? `${baseText} ${visionKeywords.join(' ')} ${visionSummary}`
+    : baseText;
+
+  // Style/palette: union of regex + vision when both exist, vision-only when
+  // regex didn't fire, regex-only when not yet enriched. Both signals are
+  // useful — regex catches title-level matches, vision catches what the
+  // title misses.
+  const style = visionStyle.length > 0
+    ? Array.from(new Set([...regexStyle, ...visionStyle]))
+    : regexStyle;
+  const palette = visionPalette.length > 0
+    ? Array.from(new Set([...regexPalette, ...visionPalette]))
+    : regexPalette;
 
   // Style tag matches (+3 each)
   for (const s of brief.styleTags || []) {
@@ -728,7 +757,8 @@ function scoreRecord(r, brief) {
   }
 
   // searchKeywords — specific words like "jazz", "saxophone", "vinyl"
-  // that directly match catalog text — most precise signal
+  // that directly match catalog text — most precise signal. Vision
+  // keywords are baked into `text` above so they participate here.
   for (const kw of brief.searchKeywords || []) {
     if (kw.length >= 3 && text.includes(kw.toLowerCase())) score += 4;
   }
@@ -750,9 +780,15 @@ function scoreRecord(r, brief) {
   // penalize items that have a DIFFERENT concrete subject tag but NOT
   // the required one. This prevents dark nature photos from sneaking
   // into a jazz brief just because they match on palette/mood.
+  //
+  // When vision has identified subjects, prefer those — they're far more
+  // accurate than the regex-derived ones, since the regex matches on title
+  // text which Society6 artists don't tag consistently.
   const requiredSubjects = brief.subjectMustMatch || [];
   if (requiredSubjects.length > 0) {
-    const itemSubjects = style.filter(s => SUBJECT_TAGS.includes(s));
+    const itemSubjects = visionSubject !== null
+      ? visionSubject
+      : style.filter(s => SUBJECT_TAGS.includes(s));
     const hasRequiredSubject = itemSubjects.some(s => requiredSubjects.includes(s));
 
     if (itemSubjects.length > 0 && !hasRequiredSubject) {
@@ -952,6 +988,7 @@ export async function POST(request) {
       pillow: 0,
       other: 0,
     };
+    let enrichedCount = 0;
     for (const r of allRecords) {
       const cat = productCategory(r.source_collection);
       if (cat === 'wall-print') catalogBreakdown.wallPrint++;
@@ -963,6 +1000,9 @@ export async function POST(request) {
       else if (cat === 'other-wall-art') catalogBreakdown.otherWallArt++;
       else if (cat === 'pillow') catalogBreakdown.pillow++;
       else catalogBreakdown.other++;
+      // Count vision-enriched records so the UI can surface enrichment
+      // status alongside catalog size in the results header.
+      if (Array.isArray(r.visionStyle) && r.visionStyle.length > 0) enrichedCount++;
     }
 
     // —— Product type filter (applied BEFORE tagging/scoring so the pool shrinks)
@@ -1189,6 +1229,7 @@ export async function POST(request) {
       catalogSize: totalBeforeFilter,
       filteredSize: totalAfterFilter,
       catalogBreakdown,
+      enrichedCount,
       aiPowered: hasAnthropicKey,
     });
   } catch (err) {

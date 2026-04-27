@@ -721,6 +721,21 @@ export default function HomePage() {
             {results && (
               <span className="text-sm text-gray-500">
                 {results.totalScored} items scored * catalog of {results.catalogSize}
+                {(() => {
+                  // Surface vision-enrichment status next to the catalog size so
+                  // users understand the recommendation quality available to them.
+                  // Three states: fully enriched, partially enriched, not enriched.
+                  const enriched = results.enrichedCount || 0;
+                  const total = results.catalogSize || 0;
+                  if (total === 0) return null;
+                  if (enriched === 0) {
+                    return <span className="text-amber-600"> (no vision tags — <a href="/catalog" className="underline hover:text-amber-700">enrich</a> for better results)</span>;
+                  }
+                  if (enriched >= total) {
+                    return <span className="text-purple-600"> (vision-enriched)</span>;
+                  }
+                  return <span className="text-purple-600"> ({enriched.toLocaleString()} enriched)</span>;
+                })()}
               </span>
             )}
           </div>
