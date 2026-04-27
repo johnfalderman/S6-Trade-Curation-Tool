@@ -971,9 +971,6 @@ export default function HomePage() {
               <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews (=IMAGE formula). Excel will show image URLs as text links.">
                 Download CSV
               </button>
-              <button onClick={handleShare} disabled={shareLoading} className="btn-secondary" title="Create a shareable link to these curated results.">
-                {shareLoading ? 'Creating link...' : 'Share Results'}
-              </button>
             </div>
 
             {slidesResult && (
@@ -989,46 +986,6 @@ export default function HomePage() {
               </div>
             )}
 
-            {shareResult && (
-              <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-blue-900 mb-2">
-                  Shareable link created · {shareResult.itemCount} items
-                </div>
-                <div className="flex gap-2 items-center">
-                  <input
-                    type="text"
-                    readOnly
-                    value={shareResult.url}
-                    onClick={e => e.target.select()}
-                    className="flex-1 border border-blue-200 rounded bg-white px-3 py-2 text-sm text-gray-700 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try { await navigator.clipboard.writeText(shareResult.url) } catch {}
-                    }}
-                    className="text-sm border border-blue-300 text-blue-700 rounded px-3 py-2 hover:bg-blue-100"
-                  >
-                    Copy
-                  </button>
-                  <a
-                    href={shareResult.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm bg-blue-600 text-white rounded px-3 py-2 hover:bg-blue-700"
-                  >
-                    Open
-                  </a>
-                </div>
-                <p className="text-xs text-blue-700 mt-2">Link copied to clipboard. Anyone with the URL can view these results.</p>
-              </div>
-            )}
-
-            {shareError && (
-              <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
-                <div className="text-sm text-red-700">Share error: {shareError}</div>
-              </div>
-            )}
           </div>
 
         </div>
