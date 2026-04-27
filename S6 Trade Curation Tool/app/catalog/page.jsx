@@ -232,7 +232,16 @@ export default function CatalogPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-2xl mx-auto px-6 py-10">
         <Link href="/" className="text-blue-600 text-sm hover:underline">← Back to Curation Tool</Link>
-        <h1 className="text-2xl font-bold text-gray-900 mt-4 mb-1">Catalog Management</h1>
+
+        {/* Loud admin-only warning. Anyone reaching this page should see it
+            before any clickable controls — the actions on this page can
+            overwrite the catalog or burn through API budget. */}
+        <div className="mt-4 bg-red-50 border-2 border-red-300 rounded-lg p-4">
+          <p className="text-red-800 font-bold text-sm tracking-wide">FOR ADMINISTRATOR ONLY</p>
+          <p className="text-red-700 text-sm mt-1">Please don&apos;t make any changes to the catalog.</p>
+        </div>
+
+        <h1 className="text-2xl font-bold text-gray-900 mt-6 mb-1">Catalog Management</h1>
         <p className="text-gray-500 text-sm mb-8">Load the Society6 wall art catalog to power recommendations.</p>
 
         {/* Status */}
