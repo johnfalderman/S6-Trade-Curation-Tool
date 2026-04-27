@@ -1,20 +1,6 @@
-import { getStore } from '@netlify/blobs';
-import { notFound } from 'next/navigation';
-
-export const dynamic = 'force-dynamic';
-
-async function loadShare(id) {
-  if (!id || !/^[A-Za-z0-9_-]{4,32}$/.test(id)) return null;
-  try {
-    const store = getStore('shares');
-    const raw = await store.get(id, { type: 'text' });
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error('loadShare failed:', e?.message);
-    return null;
-  }
-}
+'use client';
+import { useState, useEffect } from 'react';
+import { useParams } from 'next/navigation';
 
 function absUrl(u) {
   if (!u) return '';
@@ -24,6 +10,7 @@ function absUrl(u) {
 function ShareCard({ item }) {
   const productUrl = absUrl(item.product_url);
   const imageUrl = absUrl(item.image_url);
+  const [imgError, setImgError] = useState(false);
   return (
     <a
       href={productUrl}
@@ -32,12 +19,13 @@ function ShareCard({ item }) {
       className="group block bg-white border border-gray-200 rounded-lg overflow-hidden hover:border-gray-900 transition-colors"
     >
       <div className="bg-gray-100 aspect-square overflow-hidden">
-        {imageUrl ? (
+        {imageUrl && !imgError ? (
           <img
             src={imageUrl}
             alt={item.image_alt || item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
             referrerPolicy="no-referrer"
+            onError={() => setImgError(true)}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs text-center px-2">
@@ -74,22 +62,42 @@ function Section({ title, description, items }) {
   );
 }
 
-export async function generateMetadata(props) {
-  const params = await props.params;
-  const data = await loadShare(params.id);
-  if (!data) return { title: 'Curation Not Found — Society6' };
-  const parts = [data.brief.projectName, data.brief.clientName].filter(Boolean);
-  const title = parts.length ? `${parts.join(' — ')} | Society6 Curation` : 'Society6 Curation';
-  return {
-    title,
-    description: data.brief.briefSummary || 'A curated selection from Society6.',
-  };
-}
+export default function SharePage() {
+  const params = useParams();
+  const id = params.id;
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-export default async function SharePage(props) {
-  const params = await props.params;
-  const data = await loadShare(params.id);
-  if (!data) notFound();
+  useEffect(() => {
+    if (!id) return;
+    fetch(`/api/share?id=${encodeURIComponent(id)}`)
+      .then(res => {
+        if (!res.ok) throw new Error(res.status === 404 ? 'Share not found' : 'Failed to load');
+        return res.json();
+      })
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="max-w-6xl mx-auto text-center py-20">
+        <div className="text-gray-400 text-sm">Loading shared curation...</div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="max-w-6xl mx-auto text-center py-20">
+        <div className="text-6xl font-bold text-gray-200 mb-4">404</div>
+        <div className="text-gray-500 text-sm mb-2">This shared curation could not be found.</div>
+        <div className="text-gray-400 text-xs">The link may have expired or the ID may be incorrect.</div>
+        <a href="/" className="inline-block mt-6 text-sm text-red-600 hover:text-red-800 font-medium">Back to Curation Tool</a>
+      </div>
+    );
+  }
 
   const { brief, primary, accent, galleryWallSets } = data;
   const totalItems =

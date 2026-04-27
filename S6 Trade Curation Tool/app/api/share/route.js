@@ -29,6 +29,29 @@ function sanitizeItem(item) {
   };
 }
 
+// GET /api/share?id=xxx — retrieve a shared curation by ID.
+// Used by the /share/[id] client page to load data via API rather than
+// accessing Netlify Blobs directly from a server component (which can
+// fail on Netlify's edge/serverless runtime).
+export async function GET(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+    if (!id || !/^[A-Za-z0-9_-]{4,32}$/.test(id)) {
+      return NextResponse.json({ error: 'Invalid share ID' }, { status: 400 });
+    }
+    const store = getStore(SHARE_STORE);
+    const raw = await store.get(id, { type: 'text' });
+    if (!raw) {
+      return NextResponse.json({ error: 'Share not found' }, { status: 404 });
+    }
+    return NextResponse.json(JSON.parse(raw));
+  } catch (err) {
+    console.error('Share GET error:', err);
+    return NextResponse.json({ error: err.message || 'Failed to load share' }, { status: 500 });
+  }
+}
+
 export async function POST(request) {
   try {
     const body = await request.json();
