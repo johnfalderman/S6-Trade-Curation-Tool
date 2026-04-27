@@ -968,7 +968,7 @@ export default function HomePage() {
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent">
                 {slidesLoading ? 'Building deck...' : 'Generate Slides Deck'}
               </button>
-              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Thumbnails render in Google Sheets via =IMAGE(); Excel shows image URLs.">
+              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews (=IMAGE formula). Excel will show image URLs as text links.">
                 Download CSV
               </button>
               <button onClick={handleShare} disabled={shareLoading} className="btn-secondary" title="Create a shareable link to these curated results.">

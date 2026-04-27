@@ -74,7 +74,8 @@ function Section({ title, description, items }) {
   );
 }
 
-export async function generateMetadata({ params }) {
+export async function generateMetadata(props) {
+  const params = await props.params;
   const data = await loadShare(params.id);
   if (!data) return { title: 'Curation Not Found — Society6' };
   const parts = [data.brief.projectName, data.brief.clientName].filter(Boolean);
@@ -85,7 +86,8 @@ export async function generateMetadata({ params }) {
   };
 }
 
-export default async function SharePage({ params }) {
+export default async function SharePage(props) {
+  const params = await props.params;
   const data = await loadShare(params.id);
   if (!data) notFound();
 
