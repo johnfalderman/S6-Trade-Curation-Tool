@@ -98,18 +98,30 @@ export default function CatalogPage() {
   // Drives /api/catalog/enrich in a tight loop until either: the catalog is
   // fully enriched, the user pauses (stopRef), or a batch errors out.
   // Each batch updates the progress UI so the user sees movement.
-  async function runEnrichmentLoop() {
+  //
+  // `retry` mode: re-scans the entire catalog from index 0 to pick up
+  // records that failed mid-batch on a previous run. Necessary because
+  // the server's lastProcessedIndex marches forward past failed records,
+  // so they otherwise stay un-enriched until manually rescanned.
+  async function runEnrichmentLoop({ retry = false } = {}) {
     setEnrichError('');
     setEnriching(true);
     stopRef.current = false;
     setBatchTimings([]);
+    let firstBatch = true;
     try {
       while (!stopRef.current) {
         const t0 = Date.now();
+        const body = { batchSize: 20, concurrency: 6 };
+        // Only the first batch of a retry needs the resumeFrom override —
+        // subsequent batches let the server's lastProcessedIndex drive
+        // forward progress through the rest of the catalog.
+        if (retry && firstBatch) body.resumeFrom = 0;
+        firstBatch = false;
         const res = await fetch('/api/catalog/enrich', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchSize: 20, concurrency: 6 }),
+          body: JSON.stringify(body),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -284,16 +296,34 @@ export default function CatalogPage() {
               const done = enrichStatus.enrichedCount || 0;
               const remaining = Math.max(0, total - done);
               const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-              const isComplete = enrichStatus.status === 'completed' || (total > 0 && done >= total);
-              const isPartial = done > 0 && !isComplete;
+              // Fully done = every record has vision data. Anything less is
+              // either still in progress, paused, or completed-with-skipped.
+              const isFullyDone = total > 0 && done >= total;
+              // The server says it scanned to the end but some records
+              // failed/were skipped. The "Resume" button can't help here —
+              // user needs the retry flow that re-scans from the beginning.
+              const hasSkippedRecords = !isFullyDone
+                && (enrichStatus.status === 'completed-with-skipped' || (enrichStatus.status === 'completed' && done < total));
+              const isInProgressOrPaused = !isFullyDone && !hasSkippedRecords && done > 0;
 
-              const statusLabel = isComplete
+              const statusLabel = isFullyDone
                 ? 'Fully enriched'
-                : isPartial
-                  ? `Partially enriched (${done.toLocaleString()} / ${total.toLocaleString()})`
-                  : 'Not yet enriched';
+                : hasSkippedRecords
+                  ? `${done.toLocaleString()} enriched · ${remaining.toLocaleString()} skipped (need retry)`
+                  : isInProgressOrPaused
+                    ? `Partially enriched (${done.toLocaleString()} / ${total.toLocaleString()})`
+                    : 'Not yet enriched';
 
-              const statusDot = isComplete ? 'bg-green-500' : isPartial ? 'bg-purple-500' : 'bg-gray-300';
+              const statusDot = isFullyDone
+                ? 'bg-green-500'
+                : hasSkippedRecords
+                  ? 'bg-amber-500'
+                  : isInProgressOrPaused
+                    ? 'bg-purple-500'
+                    : 'bg-gray-300';
+              // Maintained for downstream JSX that previously used these names
+              const isComplete = isFullyDone;
+              const isPartial = isInProgressOrPaused;
 
               // Estimate from observed batch timings. Each timing entry tells
               // us how many records we processed in how long. Average that
@@ -355,20 +385,27 @@ export default function CatalogPage() {
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
-                    {!enriching ? (
-                      <button
-                        onClick={runEnrichmentLoop}
-                        disabled={isComplete}
-                        className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
-                      >
-                        {isComplete ? 'Enrichment complete' : isPartial ? 'Resume Enrichment' : 'Start Enrichment'}
-                      </button>
-                    ) : (
+                    {enriching ? (
                       <button
                         onClick={pauseEnrichment}
                         className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
                       >
                         Pause
+                      </button>
+                    ) : hasSkippedRecords ? (
+                      <button
+                        onClick={() => runEnrichmentLoop({ retry: true })}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600"
+                      >
+                        Retry skipped records
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => runEnrichmentLoop()}
+                        disabled={isFullyDone}
+                        className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
+                      >
+                        {isFullyDone ? 'Enrichment complete' : isInProgressOrPaused ? 'Resume Enrichment' : 'Start Enrichment'}
                       </button>
                     )}
                     {enriching && (
@@ -376,7 +413,7 @@ export default function CatalogPage() {
                         Analyzing images...
                       </span>
                     )}
-                    {!enriching && isPartial && (
+                    {!enriching && (isInProgressOrPaused || hasSkippedRecords) && (
                       <button
                         onClick={refreshEnrichStatus}
                         className="text-xs text-gray-400 hover:text-gray-600 underline ml-auto"
@@ -385,6 +422,17 @@ export default function CatalogPage() {
                       </button>
                     )}
                   </div>
+
+                  {/* Explainer for the "skipped records" state — most users
+                      won't immediately understand why the count stalled. */}
+                  {hasSkippedRecords && !enriching && (
+                    <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-800">
+                      <p className="font-semibold mb-1">Why are some records skipped?</p>
+                      <p>
+                        These {remaining.toLocaleString()} records hit a transient error during the original run — usually a Claude rate-limit, a network blip, or an unparseable response on a single image. Click <strong>Retry skipped records</strong> to re-scan the catalog from the beginning and pick them up. Most will succeed on a second attempt. A small number with no usable image URL will stay un-enrichable.
+                      </p>
+                    </div>
+                  )}
 
                   {enrichError && (
                     <div className="mt-3 bg-red-50 border border-red-100 rounded p-3 text-sm text-red-700">
@@ -396,6 +444,43 @@ export default function CatalogPage() {
                     <p><strong className="text-gray-500">How it works:</strong> Each artwork image is sent to Claude Haiku for visual analysis. Vision tags supplement the existing regex-based tags — you can run this once on a fresh catalog and partial enrichment works fine for testing.</p>
                     <p><strong className="text-gray-500">Resume-safe:</strong> Already-enriched records are skipped. Pause anytime; resume picks up where it left off.</p>
                   </div>
+
+                  {/* Export — gives Society6 a clean handoff of the enriched
+                      data so it can be reused beyond this app (e.g. fed back
+                      into the product database). Links go directly to the
+                      export endpoint, which streams the file as a download. */}
+                  {done > 0 && (
+                    <div className="mt-4 pt-4 border-t border-gray-100">
+                      <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Export Enriched Data</p>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Download the catalog with all vision tags appended. Useful for handoff to Society6 product/data teams who might want to use these tags elsewhere on the site.
+                      </p>
+                      <div className="flex gap-2 flex-wrap">
+                        <a
+                          href="/api/catalog/export?format=csv"
+                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+                          download
+                        >
+                          Download full catalog (CSV)
+                        </a>
+                        <a
+                          href="/api/catalog/export?format=csv&onlyEnriched=true"
+                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+                          download
+                        >
+                          Enriched rows only (CSV)
+                        </a>
+                        <a
+                          href="/api/catalog/export?format=json"
+                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+                          download
+                        >
+                          JSON
+                        </a>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-2">Array fields (visionStyle, visionPalette, etc.) are pipe-separated inside CSV cells.</p>
+                    </div>
+                  )}
                 </>
               );
             })()}
