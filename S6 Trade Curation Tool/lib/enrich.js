@@ -110,19 +110,9 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
 // ── Image fetching ────────────────────────────────────────────
 
 function ensureSmallWidth(url) {
-  try {
-    // Shopify CDN URLs (cdn.shopify.com) don't support width params —
-    // leave them alone. Society6's own CDN does support ?width=400.
-    if (url.includes('cdn.shopify.com')) return url;
-    const u = new URL(url);
-    const existing = u.searchParams.get('width');
-    if (!existing || parseInt(existing, 10) > 400) {
-      u.searchParams.set('width', '400');
-    }
-    return u.toString();
-  } catch {
-    return url;
-  }
+  // Society6 CDN URLs have specific width requirements — return as-is.
+  // The width=3840 in the URL is fine for Claude vision analysis.
+  return url;
 }
 
 async function fetchImageAsBase64(imageUrl) {
