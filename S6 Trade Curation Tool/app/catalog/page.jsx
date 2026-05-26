@@ -4,6 +4,13 @@ import Link from 'next/link';
 
 // ── Helpers ───────────────────────────────────────────────────
 
+// Postgres returns array columns as "{val1,val2}" strings — parse them
+function pgArr(val) {
+  if (Array.isArray(val)) return val;
+  if (!val || typeof val !== 'string') return [];
+  return val.replace(/^{|}$/g, '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
 function loadScript(src, globalName) {
   return new Promise((resolve, reject) => {
     if (window[globalName]) { resolve(); return; }
@@ -468,13 +475,13 @@ export default function CatalogPage() {
                       <div className="text-white/30 italic mt-0.5 line-clamp-2 text-[11px]">{s.vision_summary}</div>
                     )}
                     <div className="flex flex-wrap gap-1 mt-1.5">
-                      {(s.vision_subject || []).slice(0, 2).map(t => (
+                      {pgArr(s.vision_subject).slice(0, 2).map(t => (
                         <span key={'sub-' + t} className="bg-violet-500/20 text-violet-300 text-[10px] px-1.5 py-0.5 rounded">{t}</span>
                       ))}
-                      {(s.vision_style || []).slice(0, 2).map(t => (
+                      {pgArr(s.vision_style).slice(0, 2).map(t => (
                         <span key={'sty-' + t} className="bg-sky-500/20 text-sky-300 text-[10px] px-1.5 py-0.5 rounded">{t}</span>
                       ))}
-                      {(s.vision_palette || []).slice(0, 2).map(t => (
+                      {pgArr(s.vision_palette).slice(0, 2).map(t => (
                         <span key={'pal-' + t} className="bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.5 rounded">{t}</span>
                       ))}
                     </div>
