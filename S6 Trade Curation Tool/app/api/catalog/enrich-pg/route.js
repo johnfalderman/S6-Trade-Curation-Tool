@@ -1,26 +1,19 @@
 import { NextResponse } from 'next/server';
-import pg from 'pg';
 
-const { Pool } = pg;
-
-let _pool = null;
 function getPool() {
-  if (!_pool) {
-    if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set.');
-    _pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      max: 5,
-    });
-  }
-  return _pool;
+  const pg = require('pg');
+  const { Pool } = pg.default || pg;
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set.');
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+  });
 }
 
-// ── GET: enrichment status + recent runs ─────────────────────
 export async function GET() {
   try {
     const pool = getPool();
-
     const [summaryRes, runsRes, samplesRes] = await Promise.all([
       pool.query(`SELECT * FROM enrichment_summary ORDER BY category`),
       pool.query(`
@@ -43,7 +36,7 @@ export async function GET() {
         LIMIT 6
       `),
     ]);
-
+    await pool.end();
     return NextResponse.json({
       summary: summaryRes.rows,
       recentRuns: runsRes.rows,
@@ -55,21 +48,13 @@ export async function GET() {
   }
 }
 
-// ── POST: trigger an enrichment batch ────────────────────────
-// Body: { batchSize?, concurrency?, category?, force? }
 export async function POST(request) {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json(
-        { error: 'ANTHROPIC_API_KEY not configured.' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured.' }, { status: 400 });
     }
     if (!process.env.DATABASE_URL) {
-      return NextResponse.json(
-        { error: 'DATABASE_URL not configured.' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'DATABASE_URL not configured.' }, { status: 400 });
     }
 
     let body = {};
@@ -80,17 +65,8 @@ export async function POST(request) {
     const category    = body.category || null;
     const force       = !!body.force;
 
-    // Dynamically import to avoid loading pg/Anthropic at build time
     const { runEnrichmentBatch } = await import('../../../../lib/enrich.js');
-
-    const result = await runEnrichmentBatch({
-      batchSize,
-      concurrency,
-      category,
-      force,
-      continuous: false, // UI drives the loop
-    });
-
+    const result = await runEnrichmentBatch({ batchSize, concurrency, category, force, continuous: false });
     return NextResponse.json(result);
   } catch (err) {
     console.error('enrich-pg POST error:', err);
