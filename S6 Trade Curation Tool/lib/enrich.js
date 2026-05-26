@@ -111,6 +111,9 @@ Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
 
 function ensureSmallWidth(url) {
   try {
+    // Shopify CDN URLs (cdn.shopify.com) don't support width params —
+    // leave them alone. Society6's own CDN does support ?width=400.
+    if (url.includes('cdn.shopify.com')) return url;
     const u = new URL(url);
     const existing = u.searchParams.get('width');
     if (!existing || parseInt(existing, 10) > 400) {
