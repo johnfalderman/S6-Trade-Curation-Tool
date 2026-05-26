@@ -86,10 +86,10 @@ function normalizeShopifyCSVRow(row) {
     r[k.toLowerCase().trim()] = typeof v === 'string' ? v.trim() : v;
   }
 
-  const productId = r['handle'] || r['id'] || r['variant id'];
+  const productId = r['product_handle'] || r['handle'] || r['id'] || r['variant id'];
   if (!productId) return null; // skip rows with no identifier
 
-  const productType = r['type'] || r['product type'] || '';
+  const productType = r['artwork_family'] || r['type'] || r['product type'] || '';
   const tags = (r['tags'] || '').split(',').map(t => t.trim()).filter(Boolean);
 
   return {
@@ -102,8 +102,8 @@ function normalizeShopifyCSVRow(row) {
     category:       inferCategory(productType, tags),
     tags:           tags.length > 0 ? tags : null,
     price_usd:      parseFloat(r['variant price'] || r['price']) || null,
-    image_url:      r['image src'] || r['image_url'] || null,
-    product_url:    r['product url'] || r['url'] || null,
+    image_url:      r['image_url'] || r['image src'] || null,
+    product_url:    r['product_url'] || r['product url'] || r['url'] || null,
     feed_source:    'shopify_csv',
   };
 }
@@ -175,7 +175,7 @@ INSERT INTO products (
 VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
   now(), now(),
-  CASE WHEN $10 IS NULL OR $10 = '' THEN 'skipped'::enrichment_status
+  CASE WHEN $10::text IS NULL OR $10::text = '' THEN 'skipped'::enrichment_status
        ELSE 'pending'::enrichment_status
   END
 )

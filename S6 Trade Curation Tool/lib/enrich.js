@@ -375,17 +375,20 @@ export async function runEnrichmentBatch(options = {}) {
 
   while (keepGoing) {
     // Fetch next batch of pending products
-    const statusFilter = force ? `('pending','failed','enriched')` : `('pending','failed')`;
-    const categoryClause = category ? `AND category = '${category}'` : '';
+    const statusValues = force
+      ? ['pending', 'failed', 'enriched']
+      : ['pending', 'failed'];
+    const categoryClause = category ? `AND category = $3::product_category` : '';
+    const queryParams = category ? [batchSize, statusValues, category] : [batchSize, statusValues];
 
     const { rows: products } = await pool.query(
       `SELECT id, s6_product_id, title, image_url
        FROM products
-       WHERE enrichment_status = ANY(ARRAY${statusFilter}::enrichment_status[])
+       WHERE enrichment_status = ANY($2::enrichment_status[])
        ${categoryClause}
        ORDER BY created_at ASC
        LIMIT $1`,
-      [batchSize]
+      queryParams
     );
 
     if (products.length === 0) {
