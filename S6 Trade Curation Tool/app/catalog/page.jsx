@@ -1,589 +1,388 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
 
-// Per-image vision cost estimate. Based on Haiku-4.5 pricing for a 400px image
-// + ~600 token prompt + ~200 token JSON response. Used only for surfacing a
-// rough "estimated cost" string in the UI — not billing-accurate.
-const COST_PER_IMAGE_USD = 0.005;
+import { useState } from 'react';
 
-// Load a script from CDN once
-function loadScript(src, globalName) {
-  return new Promise((resolve, reject) => {
-    if (window[globalName]) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
+const SAMPLE_BRIEF = `Project Name: The Savannah Grand Hotel
+Project Type: Hotel
+Design Style: Modern Southern, Coastal
+Color Palette: Blues, Greens, Neutrals, Beige
+Avoid: Anything too abstract, No dark imagery, No skulls
+Rooms: Lobby, Guest Rooms, Restaurant, Bar, Hallways
+Gallery Wall: Yes
+Target Pieces: 80
+Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm. Should feel elevated but approachable.`;
 
-// Convert Uint8Array to base64 safely — avoids call stack overflow on large buffers
-function uint8ToBase64(bytes) {
-  let binary = '';
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk);
-  }
-  return btoa(binary);
-}
-
-export default function CatalogPage() {
-  const [status, setStatus] = useState({ loading: true, source: 'unknown', count: 0 });
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const fileRef = useRef();
-
-  // Vision enrichment state. `enrichStatus` mirrors the enrichment-meta blob
-  // on the server. `enriching` toggles the client-driven batch loop. The
-  // `stopRef` lets the loop exit cleanly between batches when the user
-  // pauses — using a ref avoids stale closures inside the async while loop.
-  const [enrichStatus, setEnrichStatus] = useState({ totalRecords: 0, enrichedCount: 0, status: 'idle' });
-  const [enriching, setEnriching] = useState(false);
-  const [enrichError, setEnrichError] = useState('');
-  const [batchTimings, setBatchTimings] = useState([]); // recent batch durations for ETA
-  const [enrichSamples, setEnrichSamples] = useState([]); // rolling spot-check samples
-  const stopRef = useRef(false);
-
-  // Refresh enrichment status from the server. Pass `withSamples` to also
-  // pull the rolling sample buffer — we do this on mount and after every
-  // batch so the UI surface stays fresh, but skip it for in-loop polls
-  // where status is what matters.
-  async function refreshEnrichStatus(withSamples = false) {
-    try {
-      const url = withSamples ? '/api/catalog/enrich?samples=true' : '/api/catalog/enrich';
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
-      setEnrichStatus({
-        totalRecords: data.totalRecords || 0,
-        enrichedCount: data.enrichedCount || 0,
-        lastProcessedIndex: data.lastProcessedIndex || 0,
-        status: data.status || 'idle',
-      });
-      if (withSamples && Array.isArray(data.samples)) {
-        setEnrichSamples(data.samples);
-      }
-    } catch {
-      // Silent — enrichment status is non-critical, retry on next poll
-    }
-  }
-
-  useEffect(() => {
-    fetch('/api/catalog')
-      .then(r => r.json())
-      .then(d => {
-        setStatus({ loading: false, source: d.source || 'unknown', count: d.count || 0 });
-        if (d.enrichment) {
-          setEnrichStatus({
-            totalRecords: d.enrichment.totalRecords || d.count || 0,
-            enrichedCount: d.enrichment.enrichedCount || 0,
-            lastProcessedIndex: d.enrichment.lastProcessedIndex || 0,
-            status: d.enrichment.status || 'idle',
-          });
-        }
-        // Pull the sample buffer separately — keeps the lightweight
-        // /api/catalog response cheap while still showing recent samples
-        // when the user lands on the page.
-        if (d.source === 'real') refreshEnrichStatus(true);
-      })
-      .catch(() => setStatus({ loading: false, source: 'error', count: 0 }));
-  }, []);
-
-  // —— Enrichment batch loop ——————————————————————————————————————————————
-  // Drives /api/catalog/enrich in a tight loop until either: the catalog is
-  // fully enriched, the user pauses (stopRef), or a batch errors out.
-  // Each batch updates the progress UI so the user sees movement.
-  //
-  // `retry` mode: re-scans the entire catalog from index 0 to pick up
-  // records that failed mid-batch on a previous run. Necessary because
-  // the server's lastProcessedIndex marches forward past failed records,
-  // so they otherwise stay un-enriched until manually rescanned.
-  async function runEnrichmentLoop({ retry = false } = {}) {
-    setEnrichError('');
-    setEnriching(true);
-    stopRef.current = false;
-    setBatchTimings([]);
-    let firstBatch = true;
-    try {
-      while (!stopRef.current) {
-        const t0 = Date.now();
-        const body = { batchSize: 20, concurrency: 6 };
-        // Only the first batch of a retry needs the resumeFrom override —
-        // subsequent batches let the server's lastProcessedIndex drive
-        // forward progress through the rest of the catalog.
-        if (retry && firstBatch) body.resumeFrom = 0;
-        firstBatch = false;
-        const res = await fetch('/api/catalog/enrich', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || `Batch failed (HTTP ${res.status})`);
-        }
-
-        const elapsed = Date.now() - t0;
-        setBatchTimings(prev => [...prev.slice(-9), { ms: elapsed, processed: data.processed || 0 }]);
-
-        setEnrichStatus({
-          totalRecords: data.totalRecords || 0,
-          enrichedCount: data.enrichedCount || 0,
-          lastProcessedIndex: data.lastProcessedIndex || 0,
-          status: data.status || 'partial',
-        });
-
-        // Refresh the spot-check panel from the batch response — saves a
-        // separate GET round-trip per batch.
-        if (Array.isArray(data.samples) && data.samples.length > 0) {
-          setEnrichSamples(data.samples);
-        }
-
-        // Done — fully enriched or only un-enrichable records remain
-        if (data.status === 'completed' || data.status === 'completed-with-skipped') break;
-
-        // No-op batch (nothing to do) — usually means the tail of the catalog
-        // is all images-missing or already-enriched. Stop to avoid spinning.
-        if ((data.processed || 0) === 0 && (data.attempted || 0) === 0) break;
-
-        // Brief pause between batches to avoid hammering the API
-        await new Promise(r => setTimeout(r, 200));
-      }
-    } catch (err) {
-      setEnrichError(err.message || 'Enrichment failed');
-    } finally {
-      setEnriching(false);
-      stopRef.current = false;
-      // Final reconciliation in case the last batch's response was partial
-      refreshEnrichStatus();
-    }
-  }
-
-  function pauseEnrichment() {
-    stopRef.current = true;
-  }
-
-  async function handleFile(file) {
-    if (!file) return;
-    setError('');
-    setSuccess('');
-    setUploading(true);
-
-    try {
-      setProgress('Loading parser...');
-      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js', 'Papa');
-      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js', 'pako');
-
-      setProgress('Parsing CSV...');
-      const text = await file.text();
-      const { data, errors } = window.Papa.parse(text, { header: true, skipEmptyLines: true });
-
-      if (!data.length) throw new Error('CSV parsed but no rows found');
-
-      setProgress(`Compressing ${data.length.toLocaleString()} records...`);
-
-      // Build compact array — strip base domain and query strings to minimize payload
-      const compact = data
-        .filter(r => r.product_url || r.title)
-        .map(r => {
-          let u = (r.product_url || '').replace('https://society6.com', '').replace('http://society6.com', '');
-          let i = (r.image_url || '').replace('https://society6.com', '').replace('http://society6.com', '');
-          // Strip query string from image URL, then add clean width param
-          const qIdx = i.indexOf('?');
-          if (qIdx > -1) i = i.substring(0, qIdx);
-          if (i) i = i + '?width=400';
-          return {
-            t: r.title || '',
-            u,
-            h: r.product_handle || '',
-            c: r.source_collection || '',
-            i,
-            a: r.image_alt || '',
-          };
-        })
-        .filter(r => r.u);
-
-      if (!compact.length) throw new Error('No valid product records found in CSV');
-
-      const jsonStr = JSON.stringify({ compact });
-      const compressed = window.pako.gzip(jsonStr);
-      const b64 = uint8ToBase64(compressed);
-
-      const sizeMB = (b64.length / 1024 / 1024).toFixed(2);
-      setProgress(`Uploading ${sizeMB}MB (compressed from ${(jsonStr.length / 1024 / 1024).toFixed(1)}MB)...`);
-
-      const res = await fetch('/api/catalog', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gzip: b64 }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Upload failed');
-
-      setSuccess(`Catalog loaded: ${json.count.toLocaleString()} products tagged and ready`);
-      setStatus({ loading: false, source: 'real', count: json.count });
-      // A fresh upload resets enrichment progress on the server. Pull the
-      // new state so the UI reflects "0 of N enriched" instead of stale
-      // numbers from the previous catalog.
-      refreshEnrichStatus();
-    } catch (err) {
-      setError('Upload failed: ' + err.message);
-    } finally {
-      setUploading(false);
-      setProgress('');
-    }
-  }
+function ArtworkCard({ item, size = 'md' }) {
+  const [imgError, setImgError] = useState(false);
+  const imgSize = size === 'sm' ? 'h-32' : 'h-48';
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-2xl mx-auto px-6 py-10">
-        <Link href="/" className="text-blue-600 text-sm hover:underline">← Back to Curation Tool</Link>
-
-        {/* Loud admin-only warning. Anyone reaching this page should see it
-            before any clickable controls — the actions on this page can
-            overwrite the catalog or burn through API budget. */}
-        <div className="mt-4 bg-red-50 border-2 border-red-300 rounded-lg p-4">
-          <p className="text-red-800 font-bold text-sm tracking-wide">FOR ADMINISTRATOR ONLY</p>
-          <p className="text-red-700 text-sm mt-1">Please don&apos;t make any changes to the catalog.</p>
+    <div className="card group flex flex-col">
+      <div className={`${imgSize} bg-gray-100 overflow-hidden`}>
+        {item.image_url && !imgError ? (
+          <img
+            src={item.image_url?.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url}
+            alt={item.image_alt || item.title}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            referrerPolicy="no-referrer"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-gray-300 text-xs text-center px-2">
+            {item.title}
+          </div>
+        )}
+      </div>
+      <div className="p-3 flex flex-col gap-1 flex-1">
+        <p className="text-sm font-medium text-gray-800 leading-tight line-clamp-2">{item.title}</p>
+        <p className="text-xs text-gray-400">{item.source_collection}</p>
+        {item.reasons && item.reasons.length > 0 && (
+          <p className="text-xs text-gray-400 italic mt-1 line-clamp-1">
+            {item.reasons.filter(r => !r.startsWith('⚠')).join(' · ')}
+          </p>
+        )}
+        <div className="mt-auto pt-2">
+          <a
+            href={item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-red-600 hover:text-red-800 font-medium"
+          >
+            View on Society6 →
+          </a>
         </div>
+      </div>
+    </div>
+  );
+}
 
-        <h1 className="text-2xl font-bold text-gray-900 mt-6 mb-1">Catalog Management</h1>
-        <p className="text-gray-500 text-sm mb-8">Load the Society6 wall art catalog to power recommendations.</p>
+function GalleryWallSet({ gwSet }) {
+  return (
+    <div className="border border-gray-200 rounded-lg p-4 bg-white">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs font-bold uppercase tracking-widest text-gray-400">
+          Set {gwSet.setNumber}
+        </span>
+        <span className="text-xs text-gray-500">— {gwSet.theme}</span>
+      </div>
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+        {gwSet.items.map(item => (
+          <ArtworkCard key={item.product_url} item={item} size="sm" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
-        {/* Status */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
-          <h2 className="font-semibold text-gray-800 mb-3">Current Catalog</h2>
-          {status.loading ? (
-            <p className="text-gray-400 text-sm">Checking catalog...</p>
-          ) : (
-            <>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`w-2 h-2 rounded-full ${status.source === 'real' ? 'bg-green-500' : 'bg-yellow-400'}`}></span>
-                <span className="font-medium text-gray-700">
-                  {status.source === 'real' ? 'Real catalog loaded' : 'Sample catalog active'}
-                </span>
-              </div>
-              <p className="text-gray-500 text-sm ml-4">{status.count.toLocaleString()} products available</p>
-              {status.source !== 'real' && (
-                <p className="mt-3 text-xs text-yellow-700 bg-yellow-50 rounded px-3 py-2">
-                  Using demo data. Upload listing_records.csv to enable real recommendations.
-                </p>
-              )}
-            </>
-          )}
-        </div>
+function BriefBadge({ label, values }) {
+  if (!values || values.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 items-start">
+      <span className="text-xs text-gray-500 pt-0.5 shrink-0">{label}:</span>
+      {values.map(v => (
+        <span key={v} className="tag">{v}</span>
+      ))}
+    </div>
+  );
+}
 
-        {/* Vision Enrichment — only shown when a real catalog is loaded */}
-        {status.source === 'real' && status.count > 0 && (
-          <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
-            <div className="flex items-start justify-between mb-1">
-              <h2 className="font-semibold text-gray-800">Vision Enrichment</h2>
-              <span className="text-xs text-purple-600 bg-purple-50 border border-purple-200 rounded px-2 py-0.5 font-medium">beta</span>
+export default function HomePage() {
+  const [briefText, setBriefText] = useState('');
+  const [moodboardUrl, setMoodboardUrl] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
+  const [slidesLoading, setSlidesLoading] = useState(false);
+  const [slidesResult, setSlidesResult] = useState(null);
+  const [slidesError, setSlidesError] = useState(null);
+  const [activeTab, setActiveTab] = useState('primary');
+
+  async function handleGenerate(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setResults(null);
+    setSlidesResult(null);
+    setSlidesError(null);
+
+    try {
+      const res = await fetch('/api/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefText, moodboardUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+      setResults(data);
+      setActiveTab('primary');
+      setTimeout(() => {
+        document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateSlides() {
+    if (!results) return;
+    setSlidesLoading(true);
+    setSlidesResult(null);
+    setSlidesError(null);
+
+    try {
+      const res = await fetch('/api/slides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brief: results.brief,
+          primary: results.primary,
+          accent: results.accent,
+          galleryWallSets: results.galleryWallSets,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.setupRequired) {
+          setSlidesError({ setup: true, instructions: data.instructions, message: data.error });
+        } else {
+          throw new Error(data.error || 'Unknown error');
+        }
+      } else {
+        setSlidesResult(data);
+      }
+    } catch (err) {
+      setSlidesError({ message: err.message });
+    } finally {
+      setSlidesLoading(false);
+    }
+  }
+
+  function handleUseSample() {
+    setBriefText(SAMPLE_BRIEF);
+  }
+
+  const brief = results?.brief;
+  const tabCounts = results
+    ? {
+        primary: results.primary?.length || 0,
+        accent: results.accent?.length || 0,
+        gallery: results.galleryWallSets?.length || 0,
+      }
+    : {};
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      {/* Intake Form */}
+      <div className="mb-10">
+        <h1 className="text-2xl font-bold text-gray-900 mb-1">New Curation Request</h1>
+        <p className="text-gray-500 text-sm mb-6">
+          Paste a Jotform submission below to generate wall art recommendations.
+        </p>
+
+        <form onSubmit={handleGenerate} className="space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-sm font-medium text-gray-700">
+                Jotform Submission Text
+              </label>
+              <button
+                type="button"
+                onClick={handleUseSample}
+                className="text-xs text-gray-400 hover:text-gray-600 underline"
+              >
+                Load sample brief
+              </button>
             </div>
-            <p className="text-gray-500 text-sm mb-4">
-              Use Claude Vision to analyze each artwork image and extract style, palette, subject, and keywords directly from the picture.
-              This produces far more accurate tags than text metadata alone — especially for artworks with sparse titles or alt text — and lifts recommendation quality across the entire app.
-            </p>
+            <textarea
+              value={briefText}
+              onChange={e => setBriefText(e.target.value)}
+              placeholder={`Paste the Jotform response here. Example:\n\nProject Name: The Grand Hotel\nProject Type: Hotel\nStyle: Modern, Coastal\nColor Palette: Blues, Neutrals\nAvoid: Dark imagery\nGallery Wall: Yes`}
+              rows={10}
+              className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+              required
+            />
+          </div>
 
-            {(() => {
-              const total = enrichStatus.totalRecords || status.count || 0;
-              const done = enrichStatus.enrichedCount || 0;
-              const remaining = Math.max(0, total - done);
-              const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-              // Fully done = every record has vision data. Anything less is
-              // either still in progress, paused, or completed-with-skipped.
-              const isFullyDone = total > 0 && done >= total;
-              // The server says it scanned to the end but some records
-              // failed/were skipped. The "Resume" button can't help here —
-              // user needs the retry flow that re-scans from the beginning.
-              const hasSkippedRecords = !isFullyDone
-                && (enrichStatus.status === 'completed-with-skipped' || (enrichStatus.status === 'completed' && done < total));
-              const isInProgressOrPaused = !isFullyDone && !hasSkippedRecords && done > 0;
+          <div>
+            <label className="text-sm font-medium text-gray-700 block mb-1.5">
+              Moodboard URL <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="url"
+              value={moodboardUrl}
+              onChange={e => setMoodboardUrl(e.target.value)}
+              placeholder="https://www.pinterest.com/..."
+              className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900"
+            />
+          </div>
 
-              const statusLabel = isFullyDone
-                ? 'Fully enriched'
-                : hasSkippedRecords
-                  ? `${done.toLocaleString()} enriched · ${remaining.toLocaleString()} skipped (need retry)`
-                  : isInProgressOrPaused
-                    ? `Partially enriched (${done.toLocaleString()} / ${total.toLocaleString()})`
-                    : 'Not yet enriched';
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm">
+              {error}
+            </div>
+          )}
 
-              const statusDot = isFullyDone
-                ? 'bg-green-500'
-                : hasSkippedRecords
-                  ? 'bg-amber-500'
-                  : isInProgressOrPaused
-                    ? 'bg-purple-500'
-                    : 'bg-gray-300';
-              // Maintained for downstream JSX that previously used these names
-              const isComplete = isFullyDone;
-              const isPartial = isInProgressOrPaused;
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={loading || !briefText.trim()}
+              className="btn-primary"
+            >
+              {loading ? 'Generating…' : 'Generate Recommendations'}
+            </button>
+            {results && (
+              <span className="text-sm text-gray-500">
+                {results.totalScored} items scored from catalog of {results.catalogSize}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
 
-              // Estimate from observed batch timings. Each timing entry tells
-              // us how many records we processed in how long. Average that
-              // and project across `remaining` to get an ETA.
-              let etaSec = null;
-              if (batchTimings.length > 0 && remaining > 0) {
-                const sumProcessed = batchTimings.reduce((s, t) => s + (t.processed || 0), 0);
-                const sumMs = batchTimings.reduce((s, t) => s + (t.ms || 0), 0);
-                if (sumProcessed > 0) {
-                  const msPerRecord = sumMs / sumProcessed;
-                  etaSec = Math.round((msPerRecord * remaining) / 1000);
-                }
-              }
-              const etaLabel = etaSec === null
-                ? null
-                : etaSec < 60
-                  ? `~${etaSec}s remaining`
-                  : etaSec < 3600
-                    ? `~${Math.round(etaSec / 60)} min remaining`
-                    : `~${(etaSec / 3600).toFixed(1)} hrs remaining`;
+      {/* Results */}
+      {results && (
+        <div id="results-section" className="space-y-8">
+          {/* Parsed brief summary */}
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <p className="section-header">Parsed Brief</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <p className="text-base font-semibold text-gray-900">{brief.projectName}</p>
+                <p className="text-sm text-gray-500 capitalize">{brief.projectType?.replace('_', ' ')}</p>
+              </div>
+              <div className="space-y-2">
+                <BriefBadge label="Style" values={brief.styleTags} />
+                <BriefBadge label="Palette" values={brief.paletteTags} />
+                {brief.avoidTags.length > 0 && (
+                  <BriefBadge label="Avoid" values={brief.avoidTags} />
+                )}
+                {brief.rooms.length > 0 && (
+                  <BriefBadge label="Spaces" values={brief.rooms} />
+                )}
+              </div>
+              <div className="flex gap-4 text-sm text-gray-500">
+                {brief.galleryWall && <span>✓ Gallery wall requested</span>}
+                {brief.pieceCount && <span>Target: {brief.pieceCount} pieces</span>}
+              </div>
+            </div>
+          </div>
 
-              const projectedCost = remaining * COST_PER_IMAGE_USD;
-              const totalCost = total * COST_PER_IMAGE_USD;
+          {/* Tabs */}
+          <div>
+            <div className="flex border-b border-gray-200 mb-6 gap-1">
+              {[
+                { key: 'primary', label: `Primary Collection`, count: tabCounts.primary },
+                { key: 'accent', label: `Accent & Alternates`, count: tabCounts.accent },
+                brief.galleryWall && { key: 'gallery', label: `Gallery Wall Sets`, count: tabCounts.gallery },
+              ]
+                .filter(Boolean)
+                .map(tab => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
+                      activeTab === tab.key
+                        ? 'border-gray-900 text-gray-900'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {tab.label}
+                    <span className="ml-1.5 text-xs text-gray-400">({tab.count})</span>
+                  </button>
+                ))}
+            </div>
 
-              return (
-                <>
-                  <div className="mb-4">
-                    <div className="flex items-baseline justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${statusDot}`}></span>
-                        <span className="text-sm font-medium text-gray-700">{statusLabel}</span>
-                      </div>
-                      <span className="text-xs text-gray-500">{done.toLocaleString()} / {total.toLocaleString()}</span>
-                    </div>
-                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${isComplete ? 'bg-green-500' : 'bg-purple-500'}`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-xs text-gray-400 mt-1.5">
-                      <span>
-                        {enriching && etaLabel
-                          ? etaLabel
-                          : isComplete
-                            ? 'Done'
-                            : remaining > 0
-                              ? `${remaining.toLocaleString()} records remaining`
-                              : ''}
-                      </span>
-                      <span>
-                        {enriching
-                          ? `~$${projectedCost.toFixed(2)} more to finish`
-                          : isComplete
-                            ? `~$${totalCost.toFixed(2)} spent (estimated)`
-                            : `~$${projectedCost.toFixed(2)} estimated to enrich rest`}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {enriching ? (
-                      <button
-                        onClick={pauseEnrichment}
-                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200"
-                      >
-                        Pause
-                      </button>
-                    ) : hasSkippedRecords ? (
-                      <button
-                        onClick={() => runEnrichmentLoop({ retry: true })}
-                        className="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600"
-                      >
-                        Retry skipped records
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => runEnrichmentLoop()}
-                        disabled={isFullyDone}
-                        className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
-                      >
-                        {isFullyDone ? 'Enrichment complete' : isInProgressOrPaused ? 'Resume Enrichment' : 'Start Enrichment'}
-                      </button>
-                    )}
-                    {enriching && (
-                      <span className="text-xs text-purple-600 animate-pulse">
-                        Analyzing images...
-                      </span>
-                    )}
-                    {!enriching && (isInProgressOrPaused || hasSkippedRecords) && (
-                      <button
-                        onClick={refreshEnrichStatus}
-                        className="text-xs text-gray-400 hover:text-gray-600 underline ml-auto"
-                      >
-                        Refresh status
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Explainer for the "skipped records" state — most users
-                      won't immediately understand why the count stalled. */}
-                  {hasSkippedRecords && !enriching && (
-                    <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-800">
-                      <p className="font-semibold mb-1">Why are some records skipped?</p>
-                      <p>
-                        These {remaining.toLocaleString()} records hit a transient error during the original run — usually a Claude rate-limit, a network blip, or an unparseable response on a single image. Click <strong>Retry skipped records</strong> to re-scan the catalog from the beginning and pick them up. Most will succeed on a second attempt. A small number with no usable image URL will stay un-enrichable.
-                      </p>
-                    </div>
-                  )}
-
-                  {enrichError && (
-                    <div className="mt-3 bg-red-50 border border-red-100 rounded p-3 text-sm text-red-700">
-                      <span className="font-semibold">Error:</span> {enrichError}
-                    </div>
-                  )}
-
-                  <div className="mt-4 pt-4 border-t border-gray-100 text-xs text-gray-400 space-y-1">
-                    <p><strong className="text-gray-500">How it works:</strong> Each artwork image is sent to Claude Haiku for visual analysis. Vision tags supplement the existing regex-based tags — you can run this once on a fresh catalog and partial enrichment works fine for testing.</p>
-                    <p><strong className="text-gray-500">Resume-safe:</strong> Already-enriched records are skipped. Pause anytime; resume picks up where it left off.</p>
-                  </div>
-
-                  {/* Export — gives Society6 a clean handoff of the enriched
-                      data so it can be reused beyond this app (e.g. fed back
-                      into the product database). Links go directly to the
-                      export endpoint, which streams the file as a download. */}
-                  {done > 0 && (
-                    <div className="mt-4 pt-4 border-t border-gray-100">
-                      <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Export Enriched Data</p>
-                      <p className="text-xs text-gray-500 mb-3">
-                        Download the catalog with all vision tags appended. Useful for handoff to Society6 product/data teams who might want to use these tags elsewhere on the site.
-                      </p>
-                      <div className="flex gap-2 flex-wrap">
-                        <a
-                          href="/api/catalog/export?format=csv"
-                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
-                          download
-                        >
-                          Download full catalog (CSV)
-                        </a>
-                        <a
-                          href="/api/catalog/export?format=csv&onlyEnriched=true"
-                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
-                          download
-                        >
-                          Enriched rows only (CSV)
-                        </a>
-                        <a
-                          href="/api/catalog/export?format=json"
-                          className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
-                          download
-                        >
-                          JSON
-                        </a>
-                      </div>
-                      <p className="text-[11px] text-gray-400 mt-2">Array fields (visionStyle, visionPalette, etc.) are pipe-separated inside CSV cells.</p>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-
-            {/* Spot-check panel — surfaces a rolling sample of recent
-                enrichments so the user can sanity-check tag quality without
-                opening the blob store. Each batch updates one sample, so
-                this fills out gradually as enrichment progresses. */}
-            {enrichSamples.length > 0 && (
-              <div className="mt-5 pt-4 border-t border-gray-100">
-                <div className="flex items-baseline justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-700">Recent samples</h3>
-                  <span className="text-xs text-gray-400">{enrichSamples.length} of last enrichments</span>
-                </div>
-                <p className="text-xs text-gray-500 mb-3">
-                  One random record per batch. Use these to spot-check whether vision tags match the artwork — if a cocktail print is tagged <code className="text-[11px] bg-gray-100 px-1 rounded">food-drink</code> and a landscape is tagged <code className="text-[11px] bg-gray-100 px-1 rounded">landscape</code>, you&apos;re good.
+            {activeTab === 'primary' && (
+              <div>
+                <p className="text-sm text-gray-500 mb-4">
+                  Top {results.primary.length} pieces scored for this brief. Best fit for prominent placement.
                 </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {enrichSamples.slice(0, 6).map(s => (
-                    <div key={`${s.index}-${s.product_handle}`} className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50 flex">
-                      <div className="w-24 h-24 bg-gray-100 shrink-0 overflow-hidden">
-                        {s.image_url && (
-                          <img
-                            src={s.image_url.startsWith('/') ? 'https://society6.com' + s.image_url : s.image_url}
-                            alt={s.title}
-                            className="w-full h-full object-cover"
-                            referrerPolicy="no-referrer"
-                            loading="lazy"
-                          />
-                        )}
-                      </div>
-                      <div className="p-2.5 text-xs flex-1 min-w-0">
-                        <div className="font-medium text-gray-800 truncate" title={s.title}>{s.title}</div>
-                        {s.visionSummary && <div className="text-gray-500 italic mt-0.5 line-clamp-2">{s.visionSummary}</div>}
-                        <div className="flex flex-wrap gap-1 mt-1.5">
-                          {(s.visionSubject || []).slice(0, 2).map(t => (
-                            <span key={'sub-' + t} className="bg-purple-100 text-purple-700 text-[10px] px-1.5 py-0.5 rounded font-medium">{t}</span>
-                          ))}
-                          {(s.visionStyle || []).slice(0, 3).map(t => (
-                            <span key={'sty-' + t} className="bg-blue-50 text-blue-700 text-[10px] px-1.5 py-0.5 rounded">{t}</span>
-                          ))}
-                          {(s.visionPalette || []).slice(0, 3).map(t => (
-                            <span key={'pal-' + t} className="bg-amber-50 text-amber-700 text-[10px] px-1.5 py-0.5 rounded">{t}</span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                  {results.primary.map(item => (
+                    <ArtworkCard key={item.product_url} item={item} />
                   ))}
                 </div>
-                {enrichSamples.length > 6 && (
-                  <p className="text-xs text-gray-400 mt-2 text-center">+ {enrichSamples.length - 6} more in buffer (newest shown first)</p>
+              </div>
+            )}
+
+            {activeTab === 'accent' && (
+              <div>
+                <p className="text-sm text-gray-500 mb-4">
+                  Accent pieces and alternates — variety options and secondary rooms.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                  {results.accent.map(item => (
+                    <ArtworkCard key={item.product_url} item={item} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'gallery' && (
+              <div>
+                <p className="text-sm text-gray-500 mb-4">
+                  Curated gallery wall sets — cohesive groupings of 6 pieces.
+                </p>
+                <div className="space-y-6">
+                  {results.galleryWallSets.map(gwSet => (
+                    <GalleryWallSet key={gwSet.setNumber} gwSet={gwSet} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Generate Deck */}
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <p className="font-semibold text-gray-900 mb-1">Generate Google Slides Deck</p>
+                <p className="text-sm text-gray-500">
+                  Creates a presentation with cover, brief summary, primary collection, accents, and gallery wall sets.
+                </p>
+              </div>
+              <button
+                onClick={handleGenerateSlides}
+                disabled={slidesLoading}
+                className="btn-accent shrink-0"
+              >
+                {slidesLoading ? 'Building deck…' : 'Generate Slides Deck'}
+              </button>
+            </div>
+
+            {slidesResult && (
+              <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
+                <p className="text-sm font-medium text-green-800 mb-2">Deck created successfully!</p>
+                <a
+                  href={slidesResult.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-green-700 hover:text-green-900 underline"
+                >
+                  Open Google Slides Deck →
+                </a>
+              </div>
+            )}
+
+            {slidesError && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <p className="text-sm font-medium text-amber-800 mb-2">
+                  {slidesError.setup ? 'Google Slides setup required' : `Error: ${slidesError.message}`}
+                </p>
+                {slidesError.setup && slidesError.instructions && (
+                  <ol className="text-xs text-amber-700 space-y-1 list-decimal list-inside mt-2">
+                    {slidesError.instructions.map((step, i) => (
+                      <li key={i}>{step}</li>
+                    ))}
+                  </ol>
                 )}
               </div>
             )}
           </div>
-        )}
-
-        {/* Upload */}
-        <div className="bg-white rounded-lg border border-gray-200 p-5">
-          <h2 className="font-semibold text-gray-800 mb-1">Upload Catalog CSV</h2>
-          <p className="text-gray-400 text-xs mb-4">Parsed and compressed in your browser — large files work fine.</p>
-
-          <div
-            className="border-2 border-dashed border-gray-200 rounded-lg p-8 text-center cursor-pointer hover:border-blue-300 hover:bg-blue-50 transition-colors"
-            onClick={() => !uploading && fileRef.current?.click()}
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
-          >
-            {uploading ? (
-              <p className="text-blue-600 text-sm font-medium">{progress || 'Processing...'}</p>
-            ) : (
-              <>
-                <p className="text-gray-600 font-medium">Click to select listing_records.csv</p>
-                <p className="text-gray-400 text-xs mt-1">Compressed before upload — any size works</p>
-              </>
-            )}
-          </div>
-
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv"
-            className="hidden"
-            onChange={e => handleFile(e.target.files[0])}
-          />
-
-          {error && (
-            <div className="mt-4 bg-red-50 border border-red-100 rounded p-3 text-sm text-red-700">
-              <span className="font-semibold">Error:</span> {error}
-            </div>
-          )}
-          {success && (
-            <div className="mt-4 bg-green-50 border border-green-100 rounded p-3 text-sm text-green-700">
-              ✓ {success}
-            </div>
-          )}
-
-          <div className="mt-5 border-t border-gray-100 pt-4">
-            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-2">Where to find the file</p>
-            <p className="text-xs text-gray-500">Open your Downloads folder → <code className="bg-gray-100 px-1 rounded">society6-clean-wall-art-crawler/output/listing_records.csv</code></p>
-          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
