@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getStore } from '@netlify/blobs';
 
+// Tell Next.js not to attempt static optimization of this route. It reads
+// request.url for query params (?format=csv|json, ?onlyEnriched=true) and
+// must always run server-side per request. Without this, the build logs
+// a noisy DYNAMIC_SERVER_USAGE error before falling back to dynamic anyway.
+export const dynamic = 'force-dynamic';
+
 const BLOB_STORE = 'catalog';
 const RECORDS_KEY = 'records';
 
