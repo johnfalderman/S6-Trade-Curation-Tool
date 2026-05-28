@@ -1,12 +1,14 @@
 // lib/googleSheets.js
-// Utility for reading and writing to the Society6 initiatives Google Sheet
-
 const SPREADSHEET_ID = '19ircxKA3npo7Ew9WI5zxlb3JuFqykJvw';
 const SHEET_NAME = '90-day Action Plan';
 
 async function getAccessToken() {
-  // Parse from full JSON env var (already exists in Netlify)
-  const json = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  // Handle base64-encoded JSON
+  if (!raw.trim().startsWith('{')) {
+    raw = Buffer.from(raw, 'base64').toString('utf8');
+  }
+  const json = JSON.parse(raw);
   const email = json.client_email;
   const privateKey = json.private_key;
 
