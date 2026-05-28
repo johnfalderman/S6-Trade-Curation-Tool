@@ -116,6 +116,7 @@ function ensureSmallWidth(url) {
 }
 
 async function fetchImageAsBase64(imageUrl) {
+  console.log('FETCH URL:', imageUrl);
   const fullUrl = imageUrl.startsWith('/')
     ? 'https://society6.com' + imageUrl
     : imageUrl;
