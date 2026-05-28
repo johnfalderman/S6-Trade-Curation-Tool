@@ -1,7 +1,7 @@
 // app/api/updates/form-data/[token]/route.js
-import { validateToken } from '@/lib/updateTokens';
-import { getInitiatives, needsUpdate } from '@/lib/googleSheets';
-import { normalizeOwner } from '@/lib/owners';
+import { validateToken } from '../../../../lib/updateTokens';
+import { getInitiatives, needsUpdate } from '../../../../lib/googleSheets';
+import { normalizeOwner } from '../../../../lib/owners';
 
 export async function GET(request, { params }) {
   const { token } = params;

@@ -1,6 +1,6 @@
 // app/api/updates/submit/route.js
-import { validateToken, markTokenUsed } from '@/lib/updateTokens';
-import { appendUpdate } from '@/lib/googleSheets';
+import { validateToken, markTokenUsed } from '../../../lib/updateTokens';
+import { appendUpdate } from '../../../lib/googleSheets';
 
 const MAX_CHARS = 300;
 const VALID_STATUSES = ['Green', 'Yellow', 'Red'];
