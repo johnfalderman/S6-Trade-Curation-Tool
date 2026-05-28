@@ -1,6 +1,6 @@
 // lib/googleSheets.js
 const SPREADSHEET_ID = '1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk';
-const SHEET_NAME = '90-day Action Plan';
+const SHEET_NAME = '90-day Customer Experience Action plan';
 
 async function getAccessToken() {
   let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;

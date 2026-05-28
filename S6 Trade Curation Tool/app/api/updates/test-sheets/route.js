@@ -44,7 +44,7 @@ export async function GET() {
     }
 
     const sheetRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk/values/${encodeURIComponent('90-day Action Plan!A1:B5')}`,
+      `https://sheets.googleapis.com/v4/spreadsheets/1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk/values/${encodeURIComponent('90-day Customer Experience Action plan!A1:B5')}`,
       { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
     );
 
