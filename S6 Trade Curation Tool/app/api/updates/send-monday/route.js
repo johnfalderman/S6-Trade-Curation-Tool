@@ -1,6 +1,6 @@
 // app/api/updates/send-monday/route.js
-import { getInitiatives } from '../../../lib/googleSheets';
-import { DIGEST_RECIPIENTS, TEST_MODE, getTestEmail, normalizeOwner } from '../../../lib/owners';
+import { getInitiatives } from '@/lib/googleSheets';
+import { DIGEST_RECIPIENTS, TEST_MODE, getTestEmail, normalizeOwner } from '@/lib/owners';
 import Anthropic from '@anthropic-ai/sdk';
 
 const client = new Anthropic();

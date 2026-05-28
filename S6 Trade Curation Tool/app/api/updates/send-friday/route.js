@@ -1,7 +1,7 @@
 // app/api/updates/send-friday/route.js
-import { getInitiatives, needsUpdate } from '../../../lib/googleSheets';
-import { getOrCreateToken } from '../../../lib/updateTokens';
-import { OWNERS, TEST_MODE, getTestEmail, normalizeOwner } from '../../../lib/owners';
+import { getInitiatives, needsUpdate } from '@/lib/googleSheets';
+import { getOrCreateToken } from '@/lib/updateTokens';
+import { OWNERS, TEST_MODE, getTestEmail, normalizeOwner } from '@/lib/owners';
 import Anthropic from '@anthropic-ai/sdk';
 
 const client = new Anthropic();
