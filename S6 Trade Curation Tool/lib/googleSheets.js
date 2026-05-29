@@ -2,7 +2,7 @@
 import { GoogleAuth } from 'google-auth-library';
 
 const SPREADSHEET_ID = '1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk';
-const SHEET_NAME = "'90-day Customer Experience Action plan'";
+const SHEET_NAME = "'90-day Customer Experience Action plan '";
 
 let _auth = null;
 function getAuth() {
