@@ -1,44 +1,37 @@
 // lib/googleSheets.js
+import { GoogleAuth } from 'google-auth-library';
+
 const SPREADSHEET_ID = '1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk';
 const SHEET_NAME = '90-day Customer Experience Action plan';
 
-async function getAccessToken() {
-  const email = process.env.GOOGLE_CLIENT_EMAIL;
-  const privateKey = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+let _auth = null;
+function getAuth() {
+  if (_auth) return _auth;
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_B64;
+  if (!b64) throw new Error('GOOGLE_SERVICE_ACCOUNT_B64 is not set');
 
-  if (!email || !privateKey) throw new Error('Missing Google credentials');
+  let creds;
+  try {
+    creds = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+  } catch (e) {
+    throw new Error('Failed to decode GOOGLE_SERVICE_ACCOUNT_B64: ' + e.message);
+  }
+  if (!creds.client_email || !creds.private_key) {
+    throw new Error('Credential JSON missing client_email or private_key');
+  }
 
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600,
-  };
-
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const encode = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
-  const signingInput = `${encode(header)}.${encode(payload)}`;
-
-  const crypto = await import('crypto');
-  const sign = crypto.createSign('RSA-SHA256');
-  sign.update(signingInput);
-  const signature = sign.sign(privateKey, 'base64url');
-  const jwt = `${signingInput}.${signature}`;
-
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: jwt,
-    }),
+  _auth = new GoogleAuth({
+    credentials: creds,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
+  return _auth;
+}
 
-  const data = await res.json();
-  if (!data.access_token) throw new Error(`Token error: ${JSON.stringify(data)}`);
-  return data.access_token;
+async function getAccessToken() {
+  const client = await getAuth().getClient();
+  const { token } = await client.getAccessToken();
+  if (!token) throw new Error('getAccessToken returned an empty token');
+  return token;
 }
 
 export async function getInitiatives() {
