@@ -3,14 +3,10 @@ const SPREADSHEET_ID = '1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk';
 const SHEET_NAME = '90-day Customer Experience Action plan';
 
 async function getAccessToken() {
-  let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  // Handle base64-encoded JSON
-  if (!raw.trim().startsWith('{')) {
-    raw = Buffer.from(raw, 'base64').toString('utf8');
-  }
-  const json = JSON.parse(raw);
-  const email = json.client_email;
-  const privateKey = json.private_key;
+  const email = process.env.GOOGLE_CLIENT_EMAIL;
+  const privateKey = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+
+  if (!email || !privateKey) throw new Error('Missing Google credentials');
 
   const now = Math.floor(Date.now() / 1000);
   const payload = {
@@ -54,7 +50,7 @@ export async function getInitiatives() {
     headers: { Authorization: `Bearer ${token}` },
   });
   const data = await res.json();
-  if (!data.values) throw new Error('No data returned from sheet');
+  if (!data.values) throw new Error(`No data returned: ${JSON.stringify(data)}`);
 
   const rows = data.values;
   const initiatives = [];

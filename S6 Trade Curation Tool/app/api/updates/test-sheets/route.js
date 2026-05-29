@@ -1,14 +1,9 @@
 export async function GET() {
   try {
-    let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-    if (!raw) return Response.json({ error: 'No env var' });
-    
-    const isBase64 = !raw.trim().startsWith('{');
-    if (isBase64) raw = Buffer.from(raw, 'base64').toString('utf8');
-    
-    const json = JSON.parse(raw);
-    const email = json.client_email;
-    const privateKey = json.private_key;
+    const email = process.env.GOOGLE_CLIENT_EMAIL;
+    const privateKey = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+
+    if (!email || !privateKey) return Response.json({ error: 'Missing credentials', email: !!email, key: !!privateKey });
 
     const now = Math.floor(Date.now() / 1000);
     const payload = {
@@ -44,7 +39,7 @@ export async function GET() {
     }
 
     const sheetRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk/values/${encodeURIComponent('90-day Customer Experience Action plan!A1:B5')}`,
+      `https://sheets.googleapis.com/v4/spreadsheets/1PniKXrXb2RRtK0akhMzaDeUEpC4P9RS6LFfTUO8WfFk/values/${encodeURIComponent('90-day Customer Experience Action plan!A1:C5')}`,
       { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
     );
 
