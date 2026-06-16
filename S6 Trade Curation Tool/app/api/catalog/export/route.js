@@ -1,20 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getStore } from '@netlify/blobs';
+import pg from 'pg';
 
-// Tell Next.js not to attempt static optimization of this route. It reads
-// request.url for query params (?format=csv|json, ?onlyEnriched=true) and
-// must always run server-side per request. Without this, the build logs
-// a noisy DYNAMIC_SERVER_USAGE error before falling back to dynamic anyway.
 export const dynamic = 'force-dynamic';
 
-const BLOB_STORE = 'catalog';
-const RECORDS_KEY = 'records';
-
-// Columns emitted in the CSV export. Original Society6 fields come first
-// (matching the input listing_records.csv shape so Society6 tooling can
-// ingest this directly), followed by the vision-derived fields. Array
-// fields are joined with '|' inside a cell — easy to split on the receiving
-// end without colliding with commas in artwork titles.
+const { Pool } = pg;
 const ARRAY_SEP = '|';
 const COLUMNS = [
   'title',
@@ -33,34 +22,103 @@ const COLUMNS = [
   'visionError',
 ];
 
+let _pool = null;
+function getPool() {
+  if (!_pool) {
+    if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set.');
+    _pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+    });
+  }
+  return _pool;
+}
+
+async function viewExists(pool, name) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM information_schema.views
+     WHERE table_schema = 'public' AND table_name = $1`,
+    [name]
+  );
+  return rows.length > 0;
+}
+
+// Shared SELECT that works whether we're querying the view or the raw tables.
+// Returns rows with camelCase keys matching COLUMNS.
+async function fetchRecords(onlyEnriched) {
+  const pool = getPool();
+  const useView = await viewExists(pool, 'enriched_products');
+
+  let sql;
+  if (useView) {
+    sql = `
+      SELECT
+        title,
+        product_url,
+        s6_product_id       AS product_handle,
+        ''                  AS source_collection,
+        image_url,
+        ''                  AS image_alt,
+        vision_summary      AS "visionSummary",
+        vision_subject      AS "visionSubject",
+        vision_style        AS "visionStyle",
+        vision_palette      AS "visionPalette",
+        vision_mood         AS "visionMood",
+        vision_keywords     AS "visionKeywords",
+        vision_at           AS "visionAt",
+        vision_error        AS "visionError"
+      FROM enriched_products
+      ${onlyEnriched ? "WHERE vision_summary IS NOT NULL AND vision_summary != ''" : ''}
+      ORDER BY id
+    `;
+  } else {
+    const join = onlyEnriched ? 'INNER' : 'LEFT';
+    sql = `
+      SELECT
+        p.title,
+        p.product_url,
+        p.s6_product_id       AS product_handle,
+        ''                    AS source_collection,
+        p.image_url,
+        ''                    AS image_alt,
+        r.vision_summary      AS "visionSummary",
+        r.vision_subject      AS "visionSubject",
+        r.vision_style        AS "visionStyle",
+        r.vision_palette      AS "visionPalette",
+        r.vision_mood         AS "visionMood",
+        r.vision_keywords     AS "visionKeywords",
+        r.created_at          AS "visionAt",
+        p.enrichment_error    AS "visionError"
+      FROM products p
+      ${join} JOIN enrichment_results r
+        ON r.product_id = p.id AND r.is_current = true
+      ORDER BY p.id
+    `;
+  }
+
+  const { rows } = await pool.query(sql);
+
+  // Normalize: convert Date objects to ISO strings, coerce nulls on array fields.
+  return rows.map(r => ({
+    ...r,
+    visionAt: r.visionAt instanceof Date ? r.visionAt.toISOString() : (r.visionAt || ''),
+  }));
+}
+
 // ——— GET: download enriched catalog ———————————————————————————————————————
 // Query params:
 //   ?format=csv (default) — listing_records.csv-shape with vision columns
 //                            appended. Pipe-delimited inside array cells.
-//   ?format=json          — raw records array, one record per element,
-//                            vision fields preserved as arrays.
-//   ?onlyEnriched=true    — restrict output to records that have vision
-//                            data (skip un-enriched rows entirely).
+//   ?format=json          — raw records array, vision fields as arrays.
+//   ?onlyEnriched=true    — restrict to records that have vision data.
 export async function GET(request) {
   try {
     const url = new URL(request.url);
     const format = (url.searchParams.get('format') || 'csv').toLowerCase();
     const onlyEnriched = url.searchParams.get('onlyEnriched') === 'true';
 
-    const store = getStore(BLOB_STORE);
-    const raw = await store.get(RECORDS_KEY, { type: 'text' });
-    if (!raw) {
-      return NextResponse.json({ error: 'No catalog loaded.' }, { status: 400 });
-    }
-
-    let records = JSON.parse(raw);
-    if (!Array.isArray(records)) {
-      return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
-    }
-
-    if (onlyEnriched) {
-      records = records.filter(r => Array.isArray(r.visionStyle) && r.visionStyle.length > 0);
-    }
+    const records = await fetchRecords(onlyEnriched);
 
     const dateStamp = new Date().toISOString().slice(0, 10);
     const filenameBase = onlyEnriched
@@ -78,7 +136,7 @@ export async function GET(request) {
       });
     }
 
-    // CSV path — default. UTF-8 BOM up front so Excel opens it cleanly.
+    // CSV — default. UTF-8 BOM so Excel opens it cleanly.
     const csv = recordsToCsv(records);
     return new NextResponse('﻿' + csv, {
       status: 200,
@@ -90,10 +148,7 @@ export async function GET(request) {
     });
   } catch (err) {
     console.error('Export error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Export failed' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err.message || 'Export failed' }, { status: 500 });
   }
 }
 
@@ -112,8 +167,6 @@ function recordsToCsv(records) {
 }
 
 function csvEscape(s) {
-  // Standard CSV escaping: wrap in quotes when content contains commas,
-  // quotes, or newlines; double-up any embedded quotes.
   if (/[",\n\r]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`;
   }
