@@ -231,13 +231,82 @@ function parseBriefFallback(text) {
   };
 }
 
+// ——— Refine: interpret freeform feedback into structured hints ——————————————
+// Turns "less beachy, more sophisticated" into add/avoid terms + hard/soft
+// classification so the SCORING POOL shifts, not just the final prompt.
+async function parseFeedbackWithClaude(feedback, brief) {
+  if (!feedback || !feedback.trim()) return null;
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const msg = await client.messages.create({
+    model: PARSE_MODEL, max_tokens: 600,
+    messages: [{ role: 'user', content:
+`A curator is refining an art recommendation set. Interpret their feedback into structured search hints.
+
+CURRENT BRIEF (for context):
+style: ${(brief.styleTags||[]).join(', ')}; palette: ${(brief.paletteTags||[]).join(', ')}; subjects: ${(brief.subjectTokens||[]).join(', ')}
+
+CATALOG STYLE TAGS: ${CATALOG_STYLES}
+CATALOG PALETTE TAGS: ${CATALOG_PALETTE}
+CATALOG MOOD TAGS: ${CATALOG_MOODS}
+
+FEEDBACK: "${feedback}"
+
+Translate the feedback into catalog vocabulary. Distinguish EXPLICIT bans from soft preferences:
+- "no beach or water", "remove florals", "nothing dark" -> avoidHard
+- "less literal", "warmer", "more elevated", "lean abstract" -> express as addStyle/addMood/addPalette/addSubjects AND/OR avoidSoft
+For banned colors name the base color only (system expands shades).
+
+Return ONLY valid JSON, no markdown:
+{
+  "addStyle": ["catalog style tags to ADD to what's wanted"],
+  "addPalette": ["catalog color words to ADD"],
+  "addMood": ["catalog mood words to ADD"],
+  "addSubjects": ["single-word subjects to ADD"],
+  "addKeywords": ["specific words to ADD"],
+  "avoidHard": ["things to now HARD-EXCLUDE (colors as base color)"],
+  "avoidSoft": ["things to de-emphasize"]
+}`
+    }]
+  });
+  try {
+    const p = JSON.parse(stripFences(msg.content[0].text));
+    return {
+      addStyle: Array.isArray(p.addStyle) ? p.addStyle : [],
+      addPalette: Array.isArray(p.addPalette) ? p.addPalette : [],
+      addMood: Array.isArray(p.addMood) ? p.addMood : [],
+      addSubjects: Array.isArray(p.addSubjects) ? p.addSubjects : [],
+      addKeywords: Array.isArray(p.addKeywords) ? p.addKeywords : [],
+      avoidHard: Array.isArray(p.avoidHard) ? p.avoidHard : [],
+      avoidSoft: Array.isArray(p.avoidSoft) ? p.avoidSoft : [],
+    };
+  } catch { return null; }
+}
+
+// Merge feedback hints into a brief, returning a new brief object.
+function applyFeedbackToBrief(brief, hints) {
+  if (!hints) return brief;
+  const u = (a, b) => Array.from(new Set([...(a || []), ...(b || [])]));
+  return {
+    ...brief,
+    styleTags: u(brief.styleTags, hints.addStyle),
+    paletteTags: u(brief.paletteTags, hints.addPalette),
+    moodTags: u(brief.moodTags, hints.addMood),
+    subjectTokens: u(brief.subjectTokens, hints.addSubjects),
+    keywords: u(brief.keywords, hints.addKeywords),
+    avoidHard: u(brief.avoidHard, hints.avoidHard),
+    avoidSoft: u(brief.avoidSoft, hints.avoidSoft),
+  };
+}
+
 // ——— Stage: weighted scoring in Postgres ——————————————————————————————————
-async function scorePool(brief, excludeMini) {
+async function scorePool(brief, excludeMini, prevTitles = []) {
   const hard = splitAvoid(lc(brief.avoidHard));
   const params = [
     lc(brief.styleTags), lc(brief.paletteTags), lc(brief.moodTags), lc(brief.keywords),
     lc(brief.subjectTokens), lc(brief.avoidSoft), POOL_CAP, POOL_LIMIT,
     hard.colorSubstrings, hard.nonColors, !!excludeMini,
+    (prevTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean),
   ];
   const sql = `
   WITH base AS (
@@ -253,6 +322,7 @@ async function scorePool(brief, excludeMini) {
     JOIN enrichment_results e ON e.product_id = p.id AND e.is_current = true
     WHERE p.description_status = 'described'
       AND ($11 = false OR p.product_type IS DISTINCT FROM 'Mini Art Print')
+      AND ($12::text[] = '{}' OR lower(p.title) <> ALL($12::text[]))
   ),
   filtered AS (
     SELECT * FROM base
@@ -363,6 +433,7 @@ export async function POST(request) {
   try {
     let briefText = '', moodboardUrl = '', moodboardFile = null;
     let pinnedUrls = [], excludeMini = true;
+    let refineFeedback = '', prevItemTitles = [];
 
     const contentType = request.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
@@ -371,6 +442,8 @@ export async function POST(request) {
       moodboardUrl = fd.get('moodboardUrl') || '';
       moodboardFile = fd.get('moodboard');
       try { pinnedUrls = JSON.parse(fd.get('pinnedUrls') || '[]'); } catch {}
+      refineFeedback = fd.get('refineFeedback') || '';
+      try { prevItemTitles = JSON.parse(fd.get('prevItemTitles') || '[]'); } catch {}
       const em = fd.get('excludeMini');
       if (em !== null && em !== undefined && em !== '') excludeMini = (em === 'true' || em === true);
     } else {
@@ -378,6 +451,8 @@ export async function POST(request) {
       briefText = body.brief || '';
       moodboardUrl = body.moodboardUrl || '';
       pinnedUrls = body.pinnedUrls || [];
+      refineFeedback = body.refineFeedback || '';
+      prevItemTitles = body.prevItemTitles || [];
       if (typeof body.excludeMini === 'boolean') excludeMini = body.excludeMini;
     }
 
@@ -408,8 +483,17 @@ export async function POST(request) {
       catch (e) { console.warn('parse failed, fallback:', e.message); brief = parseBriefFallback(briefText); brief.parsedBy = 'regex-fallback'; }
     } else { brief = parseBriefFallback(briefText); brief.parsedBy = 'regex'; }
 
-    // —— Score ——
-    const candidates = (await scorePool(brief, excludeMini)).map(toCard);
+    // —— Refine: interpret feedback into hints and merge into the brief ——
+    let feedbackHints = null;
+    if (refineFeedback && refineFeedback.trim() && hasKey) {
+      try {
+        feedbackHints = await parseFeedbackWithClaude(refineFeedback, brief);
+        if (feedbackHints) brief = applyFeedbackToBrief(brief, feedbackHints);
+      } catch (e) { console.warn('feedback parse failed:', e.message); }
+    }
+
+    // —— Score (excluding previously-shown titles on a refine) ——
+    const candidates = (await scorePool(brief, excludeMini, prevItemTitles)).map(toCard);
     const totalScored = candidates.length;
 
     if (candidates.length === 0) {
@@ -467,6 +551,7 @@ export async function POST(request) {
       galleryWallSets,
       totalScored, catalogSize: 64281, filteredSize: totalScored,
       moodboard, pinnedUnmatched, excludeMini,
+      feedbackApplied: feedbackHints ? refineFeedback : null,
       aiPowered: hasKey,
     });
   } catch (err) {
