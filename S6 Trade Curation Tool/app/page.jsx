@@ -16,24 +16,29 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
   return (
     <div className={`card group flex flex-col relative ${pinned ? 'ring-2 ring-blue-400' : ''} ${onToggle && !selected ? 'opacity-40' : ''}`}>
+      {/* PIN control (top-left): keep this piece through a Refine */}
       {onPinToggle && (
         <button
           onClick={e => { e.preventDefault(); onPinToggle(item.product_url) }}
-          className={`absolute top-1 left-1 z-10 w-6 h-6 rounded-full border flex items-center justify-center text-xs font-bold transition-colors ${pinned ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white/90 border-gray-300 text-gray-500 hover:text-blue-500 hover:border-blue-400'}`}
-          title={pinned ? 'Unpin — will be replaced on next refine' : 'Pin — keep this on next refine'}
-        >{pinned ? '\u2605' : '\u2606'}</button>
+          className={`absolute top-1 left-1 z-10 flex items-center gap-1 h-6 px-1.5 rounded-full border text-[10px] font-semibold transition-colors ${pinned ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white/90 border-gray-300 text-gray-500 hover:text-blue-500 hover:border-blue-400'}`}
+          title={pinned ? 'Pinned — kept when you Refine. Click to unpin.' : 'Pin — keep this piece when you Refine'}
+        >
+          <span>{pinned ? '\u2605' : '\u2606'}</span>
+          <span>{pinned ? 'Pinned' : 'Pin'}</span>
+        </button>
       )}
+      {/* SELECT control (top-right): include this piece in the exported deck/CSV */}
       {onToggle && (
         <button
           onClick={e => { e.preventDefault(); onToggle(item.product_url) }}
-          className={`absolute top-1 right-1 z-10 w-5 h-5 rounded border-2 flex items-center justify-center text-xs font-bold transition-colors ${selected ? 'bg-gray-900 border-gray-900 text-white' : 'bg-white border-gray-400 text-gray-400'}`}
-          title={selected ? 'Deselect from deck' : 'Add to deck'}
-        >{selected ? 'x' : '+'}</button>
+          className={`absolute top-1 right-1 z-10 flex items-center gap-1 h-6 px-1.5 rounded-full border text-[10px] font-semibold transition-colors ${selected ? 'bg-gray-900 border-gray-900 text-white' : 'bg-white border-gray-400 text-gray-400 hover:border-gray-600'}`}
+          title={selected ? 'In your deck — click to remove from the export' : 'Not in deck — click to add to the export'}
+        >
+          <span>{selected ? '\u2713' : '+'}</span>
+          <span>{selected ? 'In deck' : 'Add'}</span>
+        </button>
       )}
-      {pinned && (
-        <div className="bg-blue-50 text-blue-600 text-xs font-medium px-2 py-1 rounded-t-lg">[pin] Pinned — kept on refine</div>
-      )}
-      <div className={`bg-gray-100 overflow-hidden ${imgSize}`}>
+      <div className={`bg-gray-100 overflow-hidden ${imgSize} mt-7`}>
         {item.image_url && !imgError ? (
           <img
             src={item.image_url.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url}
@@ -62,6 +67,22 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
           </a>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Small legend explaining the two per-card controls, shown above each grid.
+function CardControlsLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-gray-500 mb-3">
+      <span className="flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-blue-500 text-white text-[10px] font-semibold">{'\u2605'} Pin</span>
+        keeps a piece when you <strong className="font-medium text-gray-600">Refine</strong>
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-gray-900 text-white text-[10px] font-semibold">{'\u2713'} In deck</span>
+        includes a piece in the <strong className="font-medium text-gray-600">exported deck / CSV</strong>
+      </span>
     </div>
   )
 }
@@ -105,7 +126,7 @@ export default function HomePage() {
   const [slidesResult, setSlidesResult] = useState(null)
   const [slidesError, setSlidesError] = useState(null)
   const [shareLoading, setShareLoading] = useState(false)
-  const [shareResult, setShareResult] = useState(null) // { url, id, itemCount }
+  const [shareResult, setShareResult] = useState(null)
   const [shareError, setShareError] = useState(null)
   const [activeTab, setActiveTab] = useState('primary')
   const fileInputRef = useRef(null)
@@ -115,26 +136,12 @@ export default function HomePage() {
   const [refineHistory, setRefineHistory] = useState([])
   const [refineLoading, setRefineLoading] = useState(false)
 
-  // Pinned items
+  // Pinned items (paste-by-URL)
   const [pinnedUrlInput, setPinnedUrlInput] = useState('')
   const [pinnedUrls, setPinnedUrls] = useState([])
 
-  // Product type filters — controls which catalog source_collections are eligible
-  // wallArtMode: 'all' | 'prints' | 'posters'  (mutually exclusive)
-  // excludeWood: removes wooden wall art (wood-mounted prints, wood wall art)
-  // includePillows: opts throw pillows INTO the pool (excluded by default since
-  // the app has historically been wall-art-only)
-  const [wallArtMode, setWallArtMode] = useState('all')
-  const [excludeWood, setExcludeWood] = useState(false)
-  const [includePillows, setIncludePillows] = useState(false)
-
-  // Find Similar: freeform textarea of Society6 product URLs (one per line).
-  // Works standalone (no brief needed) or as a supplement to a brief. The API
-  // uses matching catalog entries as seeds, aggregates their tags, and has
-  // Claude refine them into a synthetic brief for scoring.
-  const [findSimilarInput, setFindSimilarInput] = useState('')
-  const parseFindSimilarUrls = () =>
-    findSimilarInput.split('\n').map(s => s.trim()).filter(Boolean)
+  // Exclude Mini Art Prints from recommendations (on by default).
+  const [excludeMini, setExcludeMini] = useState(true)
 
   // Item selection for deck
   const [selectedItems, setSelectedItems] = useState(new Set())
@@ -162,13 +169,12 @@ export default function HomePage() {
   const [providerEmail, setProviderEmail] = useState('')
   const [providerPhone, setProviderPhone] = useState('')
   const [imagesPerSlide, setImagesPerSlide] = useState(8)
-  // Cover slide fields — override what the brief parser extracts
   const [deckClientName, setDeckClientName] = useState('')
   const [deckProjectName, setDeckProjectName] = useState('')
   const [deckLocation, setDeckLocation] = useState('')
   const [deckDate, setDeckDate] = useState('')
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, productFilters, findSimilarUrls }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
@@ -178,14 +184,13 @@ export default function HomePage() {
       if (refineFeedback) fd.append('refineFeedback', refineFeedback)
       if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
       if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
-      if (productFilters) fd.append('productFilters', JSON.stringify(productFilters))
-      if (findSimilarUrls?.length) fd.append('findSimilarUrls', JSON.stringify(findSimilarUrls))
+      fd.append('excludeMini', String(excludeMini))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, productFilters, findSimilarUrls }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }),
       })
     }
     const data = await res.json()
@@ -202,9 +207,7 @@ export default function HomePage() {
     setSlidesError(null)
     setRefineHistory([])
     try {
-      const productFilters = { wallArtMode, excludeWood, includePillows }
-      const findSimilarUrls = parseFindSimilarUrls()
-      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, productFilters, findSimilarUrls })
+      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, excludeMini })
       setResults(data)
       if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
       if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
@@ -225,35 +228,15 @@ export default function HomePage() {
     setSlidesResult(null)
     setSlidesError(null)
     try {
-      // Build pin list from local pinnedUrls + whatever the user has pin-toggled
-      // on the current result set. Pinned items should be preserved; only the
-      // UNPINNED slots need to be refreshed, so only their titles go into the
-      // prev-items exclusion list sent to the API.
-      const currentItems = [
-        ...(results?.primary || []),
-        ...(results?.accent || []),
-      ]
+      const currentItems = [...(results?.primary || []), ...(results?.accent || [])]
       const pinnedFromCards = currentItems
-        .filter(isPinned)
-        .map(i => i.product_url)
-        .filter(Boolean)
-        .map(u => (u.startsWith('/') ? 'https://society6.com' + u : u))
+        .filter(isPinned).map(i => i.product_url).filter(Boolean)
       const mergedPinnedUrls = Array.from(new Set([...(pinnedUrls || []), ...pinnedFromCards]))
-
-      const prevItemTitles = currentItems
-        .filter(i => !isPinned(i))
-        .map(i => i.title)
-        .filter(Boolean)
+      const prevItemTitles = currentItems.filter(i => !isPinned(i)).map(i => i.title).filter(Boolean)
 
       const data = await callRecommend({
-        brief: briefText,
-        moodboardUrl,
-        moodboardFile,
-        refineFeedback,
-        prevItemTitles,
-        pinnedUrls: mergedPinnedUrls,
-        productFilters: { wallArtMode, excludeWood, includePillows },
-        findSimilarUrls: parseFindSimilarUrls(),
+        brief: briefText, moodboardUrl, moodboardFile, refineFeedback,
+        prevItemTitles, pinnedUrls: mergedPinnedUrls, excludeMini,
       })
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
@@ -274,7 +257,7 @@ export default function HomePage() {
       setError('Please enter a Society6 product URL.')
       return
     }
-    setPinnedUrls(u => [...u, url])
+    setPinnedUrls(u => Array.from(new Set([...u, url])))
     setPinnedUrlInput('')
     setError(null)
   }
@@ -283,56 +266,29 @@ export default function HomePage() {
     setPinnedUrls(u => u.filter(x => x !== url))
   }
 
-  // Toggle a result card's pin state. Normalizes the URL so a Society6-relative
-  // href and an absolute URL are treated as the same item.
   function togglePin(url) {
     if (!url) return
-    const full = url.startsWith('/') ? 'https://society6.com' + url : url
-    setPinnedUrls(u =>
-      u.includes(full) || u.includes(url)
-        ? u.filter(x => x !== full && x !== url)
-        : [...u, full]
-    )
+    setPinnedUrls(u => (u.includes(url) ? u.filter(x => x !== url) : [...u, url]))
   }
 
-  // Does `item` count as pinned? True if backend marked it pinned OR its URL
-  // is in the local pinnedUrls list.
   function isPinned(item) {
     if (item?.pinned) return true
     const url = item?.product_url || ''
-    if (!url) return false
-    const full = url.startsWith('/') ? 'https://society6.com' + url : url
-    return pinnedUrls.includes(full) || pinnedUrls.includes(url)
+    return url ? pinnedUrls.includes(url) : false
   }
 
-  // Bulk pin/unpin a list of items (used by "Pin all" / "Unpin all" buttons).
   function pinAll(items) {
-    const urls = (items || [])
-      .map(i => i?.product_url)
-      .filter(Boolean)
-      .map(u => (u.startsWith('/') ? 'https://society6.com' + u : u))
+    const urls = (items || []).map(i => i?.product_url).filter(Boolean)
     setPinnedUrls(u => Array.from(new Set([...(u || []), ...urls])))
   }
   function unpinAll(items) {
-    const toRemove = new Set(
-      (items || [])
-        .map(i => i?.product_url)
-        .filter(Boolean)
-        .flatMap(u => [u, u.startsWith('/') ? 'https://society6.com' + u : u])
-    )
+    const toRemove = new Set((items || []).map(i => i?.product_url).filter(Boolean))
     setPinnedUrls(u => (u || []).filter(x => !toRemove.has(x)))
   }
 
-  // Client-side CSV export. All data is already in `results` + `selectedItems`,
-  // so no API round-trip is needed. The `thumbnail` column uses =IMAGE() which
-  // renders thumbnails in Google Sheets; Excel shows it as text (plain image_url
-  // column still works there). Prepends UTF-8 BOM so Excel opens it correctly.
   function downloadCsv() {
     if (!results) return
-    const toAbsolute = (u) => {
-      if (!u) return ''
-      return u.startsWith('/') ? 'https://society6.com' + u : u
-    }
+    const toAbsolute = (u) => !u ? '' : (u.startsWith('/') ? 'https://society6.com' + u : u)
     const rows = []
     const push = (item, placement) => {
       const productUrl = toAbsolute(item.product_url)
@@ -342,105 +298,33 @@ export default function HomePage() {
         product_url: productUrl,
         image_url: imageUrl,
         thumbnail: imageUrl ? `=IMAGE("${imageUrl}")` : '',
-        style: (item.style || []).join(', '),
-        palette: (item.palette || []).join(', '),
-        source_collection: item.source_collection || '',
+        artist: item.artist_name || '',
+        style: item.vision_style || '',
+        palette: item.vision_palette || '',
         placement,
         reason: item.reason || '',
       })
     }
-    ;(results.primary || [])
-      .filter(i => selectedItems.has(i.product_url))
-      .forEach(i => push(i, 'Primary'))
-    ;(results.accent || [])
-      .filter(i => selectedItems.has(i.product_url))
-      .forEach(i => push(i, 'Accent'))
+    ;(results.primary || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Primary'))
+    ;(results.accent || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Accent'))
     ;(results.galleryWallSets || []).forEach(set => {
-      (set.items || [])
-        .filter(i => selectedItems.has(i.product_url))
-        .forEach(i => push(i, `Gallery Wall #${set.setNumber}`))
+      (set.items || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, `Gallery Wall #${set.setNumber}`))
     })
-
-    if (rows.length === 0) {
-      setSlidesError('Nothing selected to export. Select at least one item above.')
-      return
-    }
-
-    const headers = ['title', 'product_url', 'image_url', 'thumbnail', 'style', 'palette', 'source_collection', 'placement', 'reason']
-    const escape = (v) => {
-      const s = String(v ?? '')
-      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
-      return s
-    }
-    const csv = [
-      headers.join(','),
-      ...rows.map(r => headers.map(h => escape(r[h])).join(','))
-    ].join('\n')
-
+    if (rows.length === 0) { setSlidesError('Nothing selected to export. Select at least one item above.'); return }
+    const headers = ['title', 'product_url', 'image_url', 'thumbnail', 'artist', 'style', 'palette', 'placement', 'reason']
+    const escape = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+    const csv = [headers.join(','), ...rows.map(r => headers.map(h => escape(r[h])).join(','))].join('\n')
     const safeName = (deckProjectName || results.brief?.projectName || 'S6-Curation')
-      .replace(/[^a-z0-9-]+/gi, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'S6-Curation'
+      .replace(/[^a-z0-9-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'S6-Curation'
     const filename = `${safeName}-${new Date().toISOString().slice(0, 10)}.csv`
-
-    // BOM ensures Excel reads UTF-8 titles correctly
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    a.href = url; a.download = filename
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
     URL.revokeObjectURL(url)
     setSlidesError(null)
     setSlidesResult({ filename })
-  }
-
-  // Create a shareable /share/[id] URL. Stores the currently selected curation
-  // in Netlify Blobs under a short random ID, copies the URL to clipboard,
-  // and surfaces it for the user to share manually.
-  async function handleShare() {
-    if (!results) return
-    setShareLoading(true)
-    setShareError(null)
-    setShareResult(null)
-    try {
-      const payload = {
-        brief: {
-          ...results.brief,
-          ...(deckClientName && { clientName: deckClientName }),
-          ...(deckProjectName && { projectName: deckProjectName }),
-          ...(deckLocation && { location: deckLocation }),
-        },
-        primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
-        accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
-        galleryWallSets: (results.galleryWallSets || []).map(s => ({
-          ...s,
-          items: (s.items || []).filter(i => selectedItems.has(i.product_url)),
-        })).filter(s => s.items.length > 0),
-      }
-      const res = await fetch('/api/share', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || 'Failed to create share')
-
-      const shareUrl = `${window.location.origin}/share/${data.id}`
-      try {
-        await navigator.clipboard.writeText(shareUrl)
-      } catch {
-        // Clipboard API may be blocked (http contexts, permissions). Fall back
-        // silently; the user can still copy the URL from the displayed input.
-      }
-      setShareResult({ url: shareUrl, id: data.id, itemCount: data.itemCount })
-    } catch (err) {
-      setShareError(err.message)
-    } finally {
-      setShareLoading(false)
-    }
   }
 
   async function handleGenerateSlides() {
@@ -475,11 +359,8 @@ export default function HomePage() {
       const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = url
-      link.download = data.filename || 'S6-Curation.pptx'
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+      link.href = url; link.download = data.filename || 'S6-Curation.pptx'
+      document.body.appendChild(link); link.click(); document.body.removeChild(link)
       URL.revokeObjectURL(url)
       setSlidesResult({ filename: data.filename })
     } catch (err) {
@@ -493,12 +374,8 @@ export default function HomePage() {
 
   function handleFileChange(e) {
     const file = e.target.files?.[0]
-    if (file && file.type === 'application/pdf') {
-      setMoodboardFile(file)
-    } else if (file) {
-      setError('Please upload a PDF file.')
-      e.target.value = ''
-    }
+    if (file && file.type === 'application/pdf') setMoodboardFile(file)
+    else if (file) { setError('Please upload a PDF file.'); e.target.value = '' }
   }
 
   function handleFileClear() {
@@ -513,22 +390,33 @@ export default function HomePage() {
     gallery: results?.galleryWallSets?.length || 0,
   }
 
+  // Build a moodboard status note from the API's reported statuses.
+  function moodboardNotes() {
+    const m = results?.moodboard
+    if (!m) return []
+    const notes = []
+    if (m.urlStatus === 'used') notes.push({ tone: 'ok', text: 'Moodboard URL read and applied to your brief.' })
+    else if (m.urlStatus === 'failed') notes.push({ tone: 'warn', text: "Couldn't read your moodboard URL — results are based on the brief alone. Some sites (Pinterest, Houzz) block automated reading." })
+    else if (m.urlStatus === 'empty') notes.push({ tone: 'warn', text: 'Your moodboard URL loaded but had no usable text to extract — results are based on the brief alone.' })
+    if (m.pdfStatus === 'used') notes.push({ tone: 'ok', text: 'Moodboard PDF text read and applied to your brief.' })
+    else if (m.pdfStatus === 'failed') notes.push({ tone: 'warn', text: "Couldn't read your moodboard PDF — results are based on the brief alone." })
+    else if (m.pdfStatus === 'empty') notes.push({ tone: 'warn', text: 'Your moodboard PDF had no extractable text (likely image-only) — results are based on the brief alone.' })
+    return notes
+  }
+
   return (
     <div className="max-w-4xl mx-auto">
 
       {/* -- Intake Form -- */}
       <div className="mb-10">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">New Curation Request</h1>
-        <p className="text-gray-500 text-sm mb-6">Paste a Jotform brief, paste Society6 URLs to find similar items, or combine both.</p>
+        <p className="text-gray-500 text-sm mb-6">Paste a client brief, optionally add a moodboard, and generate a curated set.</p>
 
         <form onSubmit={handleGenerate} className="space-y-4">
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-sm font-medium text-gray-700">
-                Jotform Submission Text
-                {parseFindSimilarUrls().length > 0 && <span className="text-gray-400 font-normal"> (optional when using Find Similar)</span>}
-              </label>
+              <label className="text-sm font-medium text-gray-700">Brief / Jotform Submission Text</label>
               <button type="button" onClick={handleUseSample} className="text-xs text-gray-400 hover:text-gray-600 underline">
                 Load sample brief
               </button>
@@ -536,7 +424,7 @@ export default function HomePage() {
             <textarea
               value={briefText}
               onChange={e => setBriefText(e.target.value)}
-              placeholder="Paste the full Jotform response here..."
+              placeholder="Paste the full client brief or Jotform response here..."
               rows={10}
               className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-gray-400"
             />
@@ -544,7 +432,7 @@ export default function HomePage() {
 
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1.5">
-              Moodboard URL <span className="text-gray-400 font-normal">(optional)</span>
+              Moodboard URL <span className="text-gray-400 font-normal">(optional — a Pinterest board, Houzz page, etc.)</span>
             </label>
             <input
               type="url"
@@ -553,11 +441,12 @@ export default function HomePage() {
               placeholder="https://www.pinterest.com/..."
               className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
             />
+            <p className="text-xs text-gray-400 mt-1">We read the page's text and image captions to enrich the brief. Some sites block this — you'll see a note if it couldn't be read.</p>
           </div>
 
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1.5">
-              Moodboard PDF <span className="text-gray-400 font-normal">(optional)</span>
+              Moodboard PDF <span className="text-gray-400 font-normal">(optional — text is extracted to enrich the brief)</span>
             </label>
             {moodboardFile ? (
               <div className="flex items-center gap-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
@@ -582,7 +471,7 @@ export default function HomePage() {
           {/* Pinned items */}
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1.5">
-              Pin Specific Items <span className="text-gray-400 font-normal">(optional -- paste Society6 product URLs to force-include)</span>
+              Pin Specific Items <span className="text-gray-400 font-normal">(optional — paste Society6 product URLs to force-include them)</span>
             </label>
             <div className="flex gap-2">
               <input
@@ -597,12 +486,12 @@ export default function HomePage() {
                 Add
               </button>
             </div>
-            <p className="text-xs text-amber-600 mt-2">⚠ After pinning a URL, click <strong>Generate Recommendations</strong> again — pinned items are included in the next run.</p>
+            <p className="text-xs text-amber-600 mt-2">After adding a URL, click <strong>Generate Recommendations</strong> — pinned items are force-included at the top of the results.</p>
             {pinnedUrls.length > 0 && (
               <div className="mt-2 space-y-1">
                 {pinnedUrls.map(url => (
                   <div key={url} className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
-                    <span className="text-blue-500">[pin]</span>
+                    <span className="text-blue-500">{'\u2605'}</span>
                     <span className="flex-1 truncate">{url}</span>
                     <button type="button" onClick={() => handleRemovePin(url)} className="text-gray-400 hover:text-red-500">x</button>
                   </div>
@@ -611,95 +500,18 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* Find Similar — seed by product URLs */}
-          <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-sm font-medium text-gray-800">Find Similar <span className="text-xs font-normal text-purple-600">(beta)</span></div>
-              {parseFindSimilarUrls().length > 0 && (
-                <span className="text-xs text-purple-700 bg-white border border-purple-300 rounded px-2 py-0.5">
-                  {parseFindSimilarUrls().length} URL{parseFindSimilarUrls().length === 1 ? '' : 's'}
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-gray-600 mb-2">
-              Paste Society6 product URLs (one per line) to find artwork with a similar aesthetic. Works on its own or combined with a brief. Pasted products are included in the results.
-            </p>
-            <textarea
-              value={findSimilarInput}
-              onChange={e => setFindSimilarInput(e.target.value)}
-              placeholder={'https://society6.com/product/your-seed-product-1\nhttps://society6.com/product/your-seed-product-2'}
-              rows={3}
-              className="w-full border border-purple-200 rounded-lg p-2.5 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-purple-300 bg-white"
-            />
-          </div>
-
-          {/* Product type filters */}
+          {/* Exclude Mini Art Prints */}
           <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-            <div className="text-sm font-medium text-gray-700 mb-1">Product Types</div>
-            <p className="text-xs text-gray-500 mb-3">Filter which Society6 product categories are eligible for recommendations.</p>
-
-            {/* Diagnostics: warn when a filter is enabled but the catalog has zero matching items */}
-            {results?.catalogBreakdown && (() => {
-              const b = results.catalogBreakdown
-              const hints = []
-              if (includePillows && b.pillow === 0) hints.push('No throw pillows found in the current catalog — the filter has no effect until pillow rows are added.')
-              if (wallArtMode === 'posters' && b.poster === 0) hints.push('No posters found in the current catalog. Switch to All wall art or add poster rows.')
-              if (wallArtMode === 'prints' && b.wallPrint === 0) hints.push('No standard wall prints found in the current catalog. Switch to All wall art or add print rows.')
-              if (hints.length === 0) return null
-              return (
-                <div className="mb-3 bg-amber-50 border border-amber-200 rounded px-3 py-2 text-xs text-amber-800 space-y-1">
-                  {hints.map((h, i) => <div key={i}>! {h}</div>)}
-                  <div className="text-amber-600 text-[11px] pt-1">
-                    Catalog breakdown: {b.wallPrint} wall prints · {b.poster} posters · {b.canvas} canvas · {b.wood} wood · {b.pillow} pillows · {b.otherWallArt + b.metal + b.acrylic + b.other} other
-                  </div>
-                </div>
-              )
-            })()}
-
-            <div className="mb-3">
-              <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">Wall art format</div>
-              <div className="flex flex-wrap gap-4">
-                {[
-                  { value: 'all', label: 'All wall art' },
-                  { value: 'prints', label: 'Wall prints only' },
-                  { value: 'posters', label: 'Posters only' },
-                ].map(opt => (
-                  <label key={opt.value} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="wallArtMode"
-                      value={opt.value}
-                      checked={wallArtMode === opt.value}
-                      onChange={() => setWallArtMode(opt.value)}
-                      className="accent-gray-900"
-                    />
-                    {opt.label}
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-gray-400 mt-1">&quot;Wall prints&quot; = standard / framed / mini art prints. Mutually exclusive with Posters.</p>
-            </div>
-
-            <div className="flex flex-wrap gap-x-6 gap-y-2 pt-2 border-t border-gray-200">
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={excludeWood}
-                  onChange={e => setExcludeWood(e.target.checked)}
-                  className="accent-gray-900"
-                />
-                Exclude wooden wall art
-              </label>
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includePillows}
-                  onChange={e => setIncludePillows(e.target.checked)}
-                  className="accent-gray-900"
-                />
-                Include throw pillows
-              </label>
-            </div>
+            <label className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={excludeMini}
+                onChange={e => setExcludeMini(e.target.checked)}
+                className="accent-gray-900 w-4 h-4"
+              />
+              <span className="font-medium">Exclude Mini Art Prints</span>
+            </label>
+            <p className="text-xs text-gray-500 mt-1.5 ml-6.5">Mini Art Prints are small-format pieces, usually not what trade clients want for statement walls. On by default. Full per-format filtering (canvas, framed, etc.) is coming once the product-page data is built out.</p>
           </div>
 
           {error && (
@@ -707,35 +519,13 @@ export default function HomePage() {
           )}
 
           <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={loading || (!briefText.trim() && parseFindSimilarUrls().length === 0)}
-              className="btn-primary"
-            >
-              {loading
-                ? 'Generating...'
-                : (!briefText.trim() && parseFindSimilarUrls().length > 0)
-                  ? 'Find Similar Items'
-                  : 'Generate Recommendations'}
+            <button type="submit" disabled={loading || !briefText.trim()} className="btn-primary">
+              {loading ? 'Generating...' : 'Generate Recommendations'}
             </button>
             {results && (
               <span className="text-sm text-gray-500">
-                {results.totalScored} items scored * catalog of {results.catalogSize}
-                {(() => {
-                  // Surface vision-enrichment status next to the catalog size so
-                  // users understand the recommendation quality available to them.
-                  // Three states: fully enriched, partially enriched, not enriched.
-                  const enriched = results.enrichedCount || 0;
-                  const total = results.catalogSize || 0;
-                  if (total === 0) return null;
-                  if (enriched === 0) {
-                    return <span className="text-amber-600"> (no vision tags — <a href="/catalog" className="underline hover:text-amber-700">enrich</a> for better results)</span>;
-                  }
-                  if (enriched >= total) {
-                    return <span className="text-purple-600"> (vision-enriched)</span>;
-                  }
-                  return <span className="text-purple-600"> ({enriched.toLocaleString()} enriched)</span>;
-                })()}
+                {results.totalScored} designs scored · catalog of {results.catalogSize?.toLocaleString?.() || results.catalogSize}
+                {results.excludeMini && <span className="text-gray-400"> · mini prints excluded</span>}
               </span>
             )}
           </div>
@@ -747,6 +537,24 @@ export default function HomePage() {
       {results && (
         <div id="results-section" className="space-y-8">
 
+          {/* Moodboard status notes */}
+          {moodboardNotes().length > 0 && (
+            <div className="space-y-2">
+              {moodboardNotes().map((n, i) => (
+                <div key={i} className={`text-sm rounded-lg px-3 py-2 border ${n.tone === 'ok' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                  {n.text}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Pinned-unmatched note */}
+          {results.pinnedUnmatched > 0 && (
+            <div className="text-sm rounded-lg px-3 py-2 border bg-amber-50 border-amber-200 text-amber-800">
+              {results.pinnedUnmatched} pinned URL{results.pinnedUnmatched === 1 ? '' : 's'} didn't match a design in the catalog and {results.pinnedUnmatched === 1 ? 'was' : 'were'} skipped. Double-check the URL is a Society6 product page.
+            </div>
+          )}
+
           {/* Parsed brief summary */}
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <div className="flex items-center justify-between mb-3">
@@ -754,19 +562,11 @@ export default function HomePage() {
               {brief.parsedBy === 'claude' && (
                 <span className="text-xs text-green-600 bg-green-50 border border-green-200 rounded px-2 py-0.5">AI-parsed</span>
               )}
-              {brief.parsedBy === 'find-similar-vision' && (
-                <span className="text-xs text-purple-600 bg-purple-50 border border-purple-200 rounded px-2 py-0.5">Vision-analyzed</span>
-              )}
-              {brief.parsedBy === 'find-similar-claude' && (
-                <span className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-0.5">Text-analyzed</span>
-              )}
             </div>
             {refineHistory.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-1.5">
                 {refineHistory.map((r, i) => (
-                  <span key={i} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded px-2 py-0.5">
-                    Refined: "{r}"
-                  </span>
+                  <span key={i} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded px-2 py-0.5">Refined: "{r}"</span>
                 ))}
               </div>
             )}
@@ -775,25 +575,19 @@ export default function HomePage() {
                 <div className="text-base font-semibold text-gray-900">{brief.projectName || '--'}</div>
                 <div className="text-sm text-gray-500 capitalize">{brief.projectType?.replace('_', ' ')}</div>
                 {brief.keyThemes?.length > 0 && (
-                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' * ')}"</div>
+                  <div className="text-xs text-gray-500 mt-1 italic">"{brief.keyThemes.join(' · ')}"</div>
                 )}
               </div>
               <div className="space-y-2">
                 <BriefBadge label="Style" values={brief.styleTags} />
                 <BriefBadge label="Palette" values={brief.paletteTags} />
-                {brief.avoidTags?.length > 0 && <BriefBadge label="Avoid" values={brief.avoidTags} danger />}
-                {brief.rooms?.length > 0 && <BriefBadge label="Spaces" values={brief.rooms} />}
+                {brief.avoidHard?.length > 0 && <BriefBadge label="Avoid (strict)" values={brief.avoidHard} danger />}
+                {brief.avoidSoft?.length > 0 && <BriefBadge label="De-emphasize" values={brief.avoidSoft} />}
               </div>
             </div>
             <div className="flex gap-4 text-sm text-gray-500 mt-3">
-     0        {brief.galleryWall && <span>OK Gallery wall requested</span>}
-              {brief.pieceCount && <span>Target: {brief.pieceCount} pieces</span>}
+              {brief.galleryWall && <span>Gallery wall requested</span>}
             </div>
-            {brief.moodboardNote && (
-              <div className="mt-3 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-                [pdf] {brief.moodboardNote}
-              </div>
-            )}
           </div>
 
           {/* Tabs */}
@@ -818,8 +612,9 @@ export default function HomePage() {
 
             {activeTab === 'primary' && (
               <div>
+                <CardControlsLegend />
                 <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                  <p className="text-sm text-gray-500">Top {results.primary.length} pieces. Click x to remove from deck.</p>
+                  <p className="text-sm text-gray-500">Top {results.primary.length} pieces.</p>
                   <div className="flex gap-3 items-center">
                     <button onClick={() => pinAll(results.primary)} className="text-xs text-blue-600 hover:text-blue-800 underline">Pin all</button>
                     <button onClick={() => unpinAll(results.primary)} className="text-xs text-blue-600 hover:text-blue-800 underline">Unpin all</button>
@@ -838,8 +633,9 @@ export default function HomePage() {
 
             {activeTab === 'accent' && (
               <div>
+                <CardControlsLegend />
                 <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                  <p className="text-sm text-gray-500">Accent pieces and alternates. Click x to remove from deck.</p>
+                  <p className="text-sm text-gray-500">Accent pieces and alternates.</p>
                   <div className="flex gap-3 items-center">
                     <button onClick={() => pinAll(results.accent)} className="text-xs text-blue-600 hover:text-blue-800 underline">Pin all</button>
                     <button onClick={() => unpinAll(results.accent)} className="text-xs text-blue-600 hover:text-blue-800 underline">Unpin all</button>
@@ -872,10 +668,10 @@ export default function HomePage() {
           <div className="bg-white border border-gray-200 rounded-lg p-5">
             <h3 className="text-sm font-semibold text-gray-900 mb-1">Refine These Results</h3>
             <p className="text-xs text-gray-500 mb-1">
-              Tell Claude what to adjust -- e.g. "more jazz and vintage, fewer landscapes" or "go darker, nothing with warm colors"
+              Tell the curator what to adjust — e.g. "more vintage, fewer landscapes" or "go darker, nothing with warm colors".
             </p>
             <p className="text-xs text-blue-600 mb-3">
-              Tip: click the star on any card to pin it. Pinned items are kept; only unpinned slots get refreshed.
+              Tip: click <strong>Pin</strong> on any card to keep it. Pinned pieces stay; only unpinned slots get refreshed.
               {(() => {
                 const count = [...(results?.primary || []), ...(results?.accent || [])].filter(isPinned).length
                 return count > 0 ? ` (${count} pinned)` : ''
@@ -890,11 +686,7 @@ export default function HomePage() {
                 placeholder="What would you like to change about these results?"
                 className="flex-1 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
               />
-              <button
-                onClick={handleRefine}
-                disabled={refineLoading || !refineFeedback.trim()}
-                className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
-              >
+              <button onClick={handleRefine} disabled={refineLoading || !refineFeedback.trim()} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40">
                 {refineLoading ? 'Refining...' : 'Apply'}
               </button>
             </div>
@@ -906,9 +698,8 @@ export default function HomePage() {
               <div className="font-semibold text-gray-900">Generate PowerPoint Deck</div>
               <span className="text-xs text-gray-500">{selectedItems.size} items selected for deck</span>
             </div>
-            <p className="text-sm text-gray-500 mb-4">Downloads a .pptx file. Deselect individual items above to exclude them.</p>
+            <p className="text-sm text-gray-500 mb-4">Downloads a .pptx of the pieces marked <strong>In deck</strong>. Use the select control on each card to include or exclude pieces.</p>
 
-            {/* Cover slide info */}
             <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Cover Slide Info</p>
               <div className="grid grid-cols-2 gap-3 mb-3">
@@ -932,75 +723,48 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-            {/* Provider info */}
+
             <div className="grid grid-cols-3 gap-3 mb-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Your Name</label>
-                <input
-                  type="text"
-                  value={providerName}
-                  onChange={e => setProviderName(e.target.value)}
-                  placeholder="e.g. Sarah Chen"
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
-                />
+                <input type="text" value={providerName} onChange={e => setProviderName(e.target.value)} placeholder="e.g. Sarah Chen" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={providerEmail}
-                  onChange={e => setProviderEmail(e.target.value)}
-                  placeholder="e.g. sarah@society6.com"
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
-                />
+                <input type="email" value={providerEmail} onChange={e => setProviderEmail(e.target.value)} placeholder="e.g. sarah@society6.com" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
-                <input
-                  type="tel"
-                  value={providerPhone}
-                  onChange={e => setProviderPhone(e.target.value)}
-                  placeholder="e.g. 555-867-5309"
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
-                />
+                <input type="tel" value={providerPhone} onChange={e => setProviderPhone(e.target.value)} placeholder="e.g. 555-867-5309" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
               </div>
             </div>
 
-            {/* Images per slide + button */}
             <div className="flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-2">
                 <label className="text-xs font-medium text-gray-600">Images per slide:</label>
-                <select
-                  value={imagesPerSlide}
-                  onChange={e => setImagesPerSlide(Number(e.target.value))}
-                  className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
-                >
-                  {[4, 8, 12].map(n => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
+                <select value={imagesPerSlide} onChange={e => setImagesPerSlide(Number(e.target.value))} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400">
+                  {[4, 8, 12].map(n => (<option key={n} value={n}>{n}</option>))}
                 </select>
               </div>
               <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent">
                 {slidesLoading ? 'Building deck...' : 'Generate Slides Deck'}
               </button>
-              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews (=IMAGE formula). Excel will show image URLs as text links.">
+              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews.">
                 Download CSV
               </button>
             </div>
 
             {slidesResult && (
               <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-green-800 mb-2">OK Deck downloaded!</div>
-                <div className="text-sm text-green-700">{slidesResult.filename} -- check your Downloads folder.</div>
+                <div className="text-sm font-medium text-green-800 mb-2">Deck downloaded</div>
+                <div className="text-sm text-green-700">{slidesResult.filename} — check your Downloads folder.</div>
               </div>
             )}
-
             {slidesError && (
               <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
                 <div className="text-sm text-red-700">Error: {slidesError}</div>
               </div>
             )}
-
           </div>
 
         </div>
