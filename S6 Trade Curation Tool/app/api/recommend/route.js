@@ -1,1242 +1,445 @@
 import { NextResponse } from 'next/server';
-import { getStore } from '@netlify/blobs';
+import pg from 'pg';
 
-// ——— Stage 1: Claude parses the brief into structured data ———————————————
+// ———————————————————————————————————————————————————————————————————————————
+// Trade Curation Tool — recommendation engine (Neon-backed, per-design catalog)
+//
+// Three stages:
+//   1. Claude parses the prose brief into catalog-aligned tags (hard/soft avoid)
+//   2. Weighted tag-overlap scoring runs IN Postgres over enriched_products,
+//      with color-family hard-avoid exclusion + per-artist pool cap
+//   3. Claude curator picks the final set, then a per-artist final cap is applied
+//
+// Catalog is ONE ROW PER DESIGN (64,281). Format (poster/framed/etc.) is a
+// downstream presentation concern, not part of matching — so the same artwork
+// can never appear twice in a result, and there are no per-format filters here.
+// ———————————————————————————————————————————————————————————————————————————
+
+// ——— Scoring weights ————————————————————————————————————————————————————————
+const W_STYLE   = 3;
+const W_PALETTE = 2;
+const W_MOOD    = 1;
+const W_KEYWORD = 4;
+const W_SUBJECT = 8;
+const W_AVOID_SOFT = 8;
+
+const POOL_CAP   = 3;    // max designs per artist in the candidate pool
+const POOL_LIMIT = 200;  // candidates handed to Claude
+const FINAL_CAP  = 2;    // max designs per artist in the final set
+const FINAL_N    = 20;
+
+const PARSE_MODEL  = 'claude-haiku-4-5-20251001';
+const SELECT_MODEL = 'claude-haiku-4-5-20251001';
+
+// ——— Connection pool (module-scoped so it's reused across warm invocations) —
+let _pool = null;
+function getPool() {
+  if (!_pool) {
+    _pool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 3,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+    // Don't let a pooled-connection socket death crash the function.
+    _pool.on('error', (err) => console.warn('[pg pool] idle client error:', err.message));
+  }
+  return _pool;
+}
+
+// ——— Color families for hard-avoid expansion ————————————————————————————————
+// A banned base color expands to its whole family, matched by substring against
+// the design's palette tags. tan/sand/beige/taupe are deliberately excluded
+// from the brown family (coastal-adjacent); only banned if named explicitly.
+const COLOR_FAMILIES = {
+  orange: ['orange', 'terracotta', 'burnt orange', 'coral orange', 'amber', 'rust', 'tangerine', 'apricot'],
+  brown:  ['brown', 'warm brown', 'rust-brown', 'pale brown', 'chocolate', 'mahogany', 'sienna', 'umber', 'coffee'],
+  red:    ['red', 'crimson', 'scarlet', 'burgundy', 'maroon', 'brick red'],
+  pink:   ['pink', 'blush', 'rose', 'magenta', 'fuchsia', 'dusty rose'],
+  purple: ['purple', 'violet', 'lavender', 'plum', 'mauve', 'lilac'],
+  green:  ['green', 'sage green', 'forest green', 'olive', 'emerald', 'mint', 'seafoam'],
+  blue:   ['blue', 'navy', 'navy blue', 'teal', 'turquoise', 'cobalt', 'indigo', 'aqua', 'cyan'],
+  yellow: ['yellow', 'golden yellow', 'mustard', 'gold', 'ochre'],
+  gray:   ['gray', 'grey', 'charcoal', 'slate'],
+  black:  ['black', 'onyx', 'ebony'],
+};
+
+const PALETTE_COLOR_WORDS = new Set([
+  'cream','white','black','orange','gold','pink','yellow','teal','red','tan',
+  'green','sage green','blue','coral','gray','grey','brown','beige','golden yellow',
+  'charcoal','navy','navy blue','forest green','purple','turquoise','terracotta',
+  'rust','amber','burgundy','maroon','peach','mint','seafoam','aqua','indigo',
+  'cobalt','lavender','blush','sand','sandy','olive','mustard','ochre','sienna'
+]);
+
+function expandColor(term) {
+  const t = (term || '').toLowerCase().trim();
+  if (COLOR_FAMILIES[t]) return COLOR_FAMILIES[t];
+  for (const [, members] of Object.entries(COLOR_FAMILIES)) {
+    if (members.includes(t)) return members;
+  }
+  return [t];
+}
+
+function splitAvoid(hardAvoid) {
+  const colorSubstrings = new Set();
+  const nonColors = [];
+  for (const t of hardAvoid) {
+    const isColor = PALETTE_COLOR_WORDS.has(t) || COLOR_FAMILIES[t] ||
+      Object.values(COLOR_FAMILIES).some(m => m.includes(t));
+    if (isColor) {
+      for (const member of expandColor(t)) colorSubstrings.add(member);
+    } else {
+      nonColors.push(t);
+    }
+  }
+  return { colorSubstrings: Array.from(colorSubstrings), nonColors };
+}
+
+// ——— Catalog head vocabulary (fed to the parser so brief & data align) ———————
+const CATALOG_STYLES = 'illustration, minimalist, line art, geometric, photographic, abstract, vintage, mid-century modern, geometric abstraction, watercolor, typography, watercolor illustration, minimalist illustration, vintage illustration, retro';
+const CATALOG_PALETTE = 'cream, white, black, orange, gold, pink, yellow, teal, red, tan, green, sage green, blue, coral, gray, brown, beige, golden yellow, charcoal, navy, forest green, purple, turquoise, terracotta, navy blue';
+const CATALOG_MOODS = 'contemplative, playful, serene, calm, whimsical, peaceful, warm, nostalgic, energetic, meditative, cheerful, joyful, retro, balanced, bold';
+
+const lc = (arr) => Array.from(new Set((arr || []).map(s => (s || '').toLowerCase().trim()).filter(Boolean)));
+const FENCE_OPEN = new RegExp('^```json?\\s*', 'i');
+const FENCE_CLOSE = new RegExp('\\s*```$', 'i');
+const stripFences = (s) => s.trim().replace(FENCE_OPEN, '').replace(FENCE_CLOSE, '');
+
+// ——— Stage 1: parse the brief ———————————————————————————————————————————————
 async function parseBriefWithClaude(text) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+  const msg = await client.messages.create({
+    model: PARSE_MODEL,
     max_tokens: 1024,
-    messages: [{
-      role: 'user',
-      content: `You are an interior design trade art curation assistant. Parse this Jotform curation brief into structured JSON.
+    messages: [{ role: 'user', content:
+`You parse interior-design art curation briefs into structured tags for a catalog search.
+The catalog tags artwork with a known vocabulary — ALIGN your output to it so matching works.
 
-The brief may be in any format — a direct form response, a copied email, a freeform description, or a structured list.
+CATALOG STYLE TAGS (use these spellings where they fit): ${CATALOG_STYLES}
+CATALOG PALETTE TAGS (use these exact color words): ${CATALOG_PALETTE}
+CATALOG MOOD TAGS: ${CATALOG_MOODS}
 
-BRIEF TEXT:
+BRIEF:
 ${text}
 
-Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
+CRITICAL — distinguish two kinds of negative:
+- avoidHard = things the client EXPLICITLY BANS. Language like "no orange", "NO browns or oranges at all", "nothing western", "absolutely no florals". These will HARD-EXCLUDE matching artwork from results.
+- avoidSoft = mere preferences or de-emphasis. Language like "not too rustic", "prefer blues", "lean modern", "less busy". These only push artwork DOWN, not out.
+When unsure, put it in avoidSoft (soft is safer — a hard ban removes art entirely). Only use avoidHard when the brief's language is an explicit prohibition.
+For banned colors, just name the base color (e.g. "brown", "orange") — the system expands to related shades automatically.
+
+Return ONLY valid JSON, no markdown:
 {
-  "projectName": "look for 'Design Project', 'Design Project Name', or 'Project Name' label. Use value exactly, or empty string.",
-  "clientName": "look for 'Company Name', 'Client Name', 'Property Name', 'Business Name', or 'Company' label. Use value exactly.",
-  "location": "city and state/country (look for Location, City, Address, or any geographic reference)",
-  "projectType": "hotel|restaurant|vacation_rental|office|other",
-  "styleTags": ["art style keywords — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, food-drink, monochrome, illustration"],
-  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red"],
-  "avoidTags": ["things to explicitly avoid — e.g. floral, kids, landscape, typography, abstract, dark, bright, pastel"],
+  "projectName": "look for 'Design Project','Project Name' etc., else empty string",
+  "clientName": "look for 'Company','Client','Property Name' etc., else empty string",
+  "location": "city/state if present, else empty string",
+  "projectType": "hotel|restaurant|vacation_rental|office|residential|other",
+  "briefSummary": "2-3 sentences",
+  "styleTags": ["catalog style words that fit"],
+  "paletteTags": ["catalog COLOR words the client wants — use exact catalog spellings"],
+  "moodTags": ["catalog mood words that fit the space"],
+  "subjectTokens": ["3-8 concrete SINGLE-WORD subject words the art should depict — e.g. ocean, dune, sailboat, palm, wildflower, marsh. Prefer single words over phrases."],
+  "keywords": ["12-20 specific words likely to appear in matching artwork descriptions"],
+  "avoidHard": ["explicitly BANNED colors/subjects/styles. For colors, name the base color only. Empty array if nothing is explicitly banned."],
+  "avoidSoft": ["de-emphasized preferences — pushed down, not excluded"],
   "galleryWall": true or false,
-  "targetPieceCount": number or null,
-  "keyThemes": ["3-6 short vibe phrases — e.g. 'jazz club atmosphere', 'coastal modern', 'dark moody', 'music venue', 'southern charm'"],
-  "rooms": ["room types mentioned"],
-  "searchKeywords": ["15-25 individual words that describe artwork fitting this brief — very specific words like 'saxophone', 'vinyl', 'turntable', 'cobalt', 'terracotta', 'geometric' — that would match artwork titles or descriptions"],
-  "subjectMustMatch": ["the 2-5 PRIMARY subject categories this brief is about — e.g. 'music', 'urban', 'coastal', 'food-drink', 'monochrome'. These are the non-negotiable themes. An artwork that doesn't relate to ANY of these subjects is a bad recommendation, even if the colors and mood are right."],
-  "briefSummary": "2-3 sentence plain English summary of what this client needs"
+  "keyThemes": ["3-6 short vibe phrases"]
 }`
     }]
   });
-
-  let jsonStr = message.content[0].text.trim();
-  // Strip any accidental markdown fences — Haiku sometimes wraps JSON
-  jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-  return JSON.parse(jsonStr);
+  return JSON.parse(stripFences(msg.content[0].text));
 }
 
-// ——— Feedback parsing: turn freeform refinement text into structured hints ———
-// Without this, "gritty cityscapes" just appears in the final prompt but
-// the candidate pool is still scored against the original brief. By extracting
-// add/avoid keywords from feedback, we reshape the pool itself.
-async function parseFeedbackWithClaude(feedback) {
-  if (!feedback || !feedback.trim()) return { addKeywords: [], avoidKeywords: [], tone: '' };
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 400,
-    messages: [{
-      role: 'user',
-      content: `A client is refining art recommendations. Parse their feedback into structured hints.
-
-FEEDBACK: "${feedback}"
-
-Valid subject categories: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome.
-
-Return ONLY valid JSON (no markdown) with:
-{
-  "addKeywords": ["concrete words that should appear in matching artwork titles/descriptions — e.g. 'gritty', 'cityscape', 'skyline', 'industrial', 'concrete', 'alleyway'. Include synonyms and related concrete subjects. 6-15 words."],
-  "avoidKeywords": ["words that would disqualify an artwork based on the feedback's tone or subject — if feedback says 'urban scenes', avoid 'mountain', 'forest', 'woodland', 'floral', 'beach', 'landscape'. If feedback says 'gritty', avoid 'cheerful', 'christmas', 'whimsical', 'pastel'. 4-12 words."],
-  "subjectOverride": ["IF the feedback explicitly names a subject matter (like 'cityscapes', 'urban scenes', 'music art', 'coastal views'), return the matching subject categories from the list above. Otherwise return []. For 'urban scenes moody dark' return ['urban']. For 'more nature' return ['landscape']. For 'less nature more geometric' return ['abstract']."],
-  "tone": "1 short phrase describing the overall mood shift"
-}`
-    }]
-  });
-
-  try {
-    let raw = message.content[0].text.trim();
-    raw = raw.replace(/^\`\`\`json?\s*/i, '').replace(/\s*\`\`\`$/i, '');
-    const parsed = JSON.parse(raw);
-    return {
-      addKeywords: Array.isArray(parsed.addKeywords) ? parsed.addKeywords : [],
-      avoidKeywords: Array.isArray(parsed.avoidKeywords) ? parsed.avoidKeywords : [],
-      subjectOverride: Array.isArray(parsed.subjectOverride) ? parsed.subjectOverride : [],
-      tone: parsed.tone || ''
-    };
-  } catch {
-    return { addKeywords: [], avoidKeywords: [], subjectOverride: [], tone: '' };
+// ——— Regex fallback parser (no API key) —————————————————————————————————————
+function parseBriefFallback(text) {
+  const t = (text || '').toLowerCase();
+  const has = (re) => re.test(t);
+  const styleTags = [];
+  if (has(/minimal/)) styleTags.push('minimalist');
+  if (has(/line art|line drawing/)) styleTags.push('line art');
+  if (has(/geometric/)) styleTags.push('geometric');
+  if (has(/abstract/)) styleTags.push('abstract');
+  if (has(/watercolor|watercolour/)) styleTags.push('watercolor');
+  if (has(/mid.?century/)) styleTags.push('mid-century modern');
+  if (has(/vintage|retro/)) styleTags.push('vintage');
+  const paletteTags = [];
+  for (const c of ['blue','navy','teal','turquoise','sage green','cream','white','pink','green','gold','gray','black']) {
+    if (t.includes(c)) paletteTags.push(c);
   }
+  return {
+    projectName: '', clientName: '', location: '', projectType: 'other',
+    briefSummary: `Project seeking ${styleTags.join(', ') || 'wall'} art in ${paletteTags.join(', ') || 'mixed'} tones.`,
+    styleTags, paletteTags, moodTags: [],
+    subjectTokens: [], keywords: [...styleTags, ...paletteTags],
+    avoidHard: [], avoidSoft: [], galleryWall: t.includes('gallery wall'),
+    keyThemes: styleTags.slice(0, 3),
+  };
 }
 
-// ——— Stage 2: Claude selects the best artworks from candidates ——————————————
-async function selectWithClaude(candidates, brief, prevItemTitles = [], feedback = '') {
+// ——— Stage 2: weighted scoring in Postgres ————————————————————————————————
+async function scorePool(brief) {
+  const hard = splitAvoid(lc(brief.avoidHard));
+  const params = [
+    lc(brief.styleTags),     // $1
+    lc(brief.paletteTags),   // $2
+    lc(brief.moodTags),      // $3
+    lc(brief.keywords),      // $4
+    lc(brief.subjectTokens), // $5
+    lc(brief.avoidSoft),     // $6
+    POOL_CAP,                // $7
+    POOL_LIMIT,              // $8
+    hard.colorSubstrings,    // $9
+    hard.nonColors,          // $10
+  ];
+
+  const sql = `
+  WITH base AS (
+    SELECT
+      p.id, p.s6_product_id, p.title, p.artist_name, p.artist_handle,
+      p.product_type, p.image_url, p.product_url,
+      e.vision_subject, e.vision_style, e.vision_palette, e.vision_mood,
+      lower(concat_ws(' ', e.vision_summary, e.vision_subject, e.vision_style,
+        e.vision_palette, e.vision_mood, e.vision_keywords, e.artwork_description)) AS blob,
+      regexp_split_to_array(lower(coalesce(e.vision_style,'')),   '\\s*,\\s*') AS style_tags,
+      regexp_split_to_array(lower(coalesce(e.vision_palette,'')), '\\s*,\\s*') AS palette_tags,
+      regexp_split_to_array(lower(coalesce(e.vision_mood,'')),    '\\s*,\\s*') AS mood_tags
+    FROM products p
+    JOIN enrichment_results e ON e.product_id = p.id AND e.is_current = true
+    WHERE p.description_status = 'described'
+  ),
+  filtered AS (
+    SELECT * FROM base
+    WHERE
+      NOT EXISTS (
+        SELECT 1 FROM unnest($9::text[]) c, unnest(palette_tags) pt
+        WHERE c <> '' AND pt LIKE '%'||c||'%'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest($10::text[]) n
+        WHERE n <> '' AND (palette_tags @> ARRAY[n] OR blob LIKE '%'||n||'%')
+      )
+  ),
+  scored AS (
+    SELECT *,
+      ${W_STYLE}   * cardinality(ARRAY(SELECT unnest(style_tags)   INTERSECT SELECT unnest($1::text[]))) +
+      ${W_PALETTE} * cardinality(ARRAY(SELECT unnest(palette_tags) INTERSECT SELECT unnest($2::text[]))) +
+      ${W_MOOD}    * cardinality(ARRAY(SELECT unnest(mood_tags)    INTERSECT SELECT unnest($3::text[]))) +
+      ${W_KEYWORD} * (SELECT count(*) FROM unnest($4::text[]) k WHERE k <> '' AND blob LIKE '%'||k||'%') +
+      ${W_SUBJECT} * (SELECT count(*) FROM unnest($5::text[]) s WHERE s <> '' AND (lower(vision_subject) LIKE '%'||s||'%' OR blob LIKE '%'||s||'%')) -
+      ${W_AVOID_SOFT} * (SELECT count(*) FROM unnest($6::text[]) a WHERE a <> '' AND (palette_tags @> ARRAY[a] OR blob LIKE '%'||a||'%'))
+      AS score
+    FROM filtered
+  ),
+  ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY artist_name ORDER BY score DESC, s6_product_id) AS artist_rn
+    FROM scored
+    WHERE score > 0
+  )
+  SELECT
+    s6_product_id, title, artist_name, artist_handle, product_type,
+    image_url, product_url, vision_subject, vision_style, vision_palette, vision_mood, score
+  FROM ranked
+  WHERE artist_rn <= $7
+  ORDER BY score DESC, s6_product_id
+  LIMIT $8
+  `;
+
+  const res = await getPool().query(sql, params);
+  return res.rows;
+}
+
+// ——— Stage 3: Claude curator pick ———————————————————————————————————————————
+async function selectWithClaude(candidates, brief) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  // CHANGE 2: Include style + palette tags so Claude has richer context
-  const catalogList = candidates.slice(0, 200).map((r, i) =>
-    `${i}|${r.title}|${r.source_collection}|${r.product_handle}|styles:${(r.style||[]).join(',')}|palette:${(r.palette||[]).join(',')}`
+  const list = candidates.slice(0, 150).map((r, i) =>
+    `${i}|${r.title}|by ${r.artist_name}|subj:${r.vision_subject}|style:${r.vision_style}|palette:${r.vision_palette}`
   ).join('\n');
-
-  const hasFeedback = (feedback || '').trim().length > 0;
-  const hasPrev = prevItemTitles.length > 0;
-  let refinementContext = '';
-  if (hasFeedback || hasPrev) {
-    const parts = ['\n=== REFINEMENT REQUEST ==='];
-    if (hasFeedback) {
-      parts.push(`CLIENT FEEDBACK (this is the MOST IMPORTANT instruction — your selection MUST directly reflect it): "${feedback}"`);
-    }
-    if (hasPrev) {
-      parts.push(`PREVIOUSLY SHOWN TO CLIENT (do NOT repeat these titles):\n${prevItemTitles.slice(0, 40).join('\n')}`);
-    }
-    parts.push('Select artworks that concretely act on the client feedback above. If the feedback says "less X, more Y", your picks must noticeably shift away from X and toward Y compared to before. Do not return items that are essentially the same vibe as what was previously shown.');
-    refinementContext = parts.join('\n');
-  }
-
-  const avoidLine = (brief.avoidTags || []).length > 0
-    ? `Avoid anything with these qualities: ${brief.avoidTags.join(', ')}.`
-    : '';
-
-  const subjectLine = (brief.subjectMustMatch || brief.styleTags || []).length > 0
-    ? `CRITICAL — The primary subject matter for this project is: ${(brief.subjectMustMatch || brief.styleTags || []).join(', ')}. Do NOT select artworks whose subject matter is unrelated to these themes, even if the colors or mood happen to match. For example, if the brief is about music/jazz, do not pick nature photography just because it's dark and moody.`
-    : '';
-
-  const prompt = `You are an expert art curator for Society6's trade program. You select wall art for interior designers, hotels, restaurants, and vacation rental owners. Your curation choices reflect genuine aesthetic judgment — not just keyword matching.
+  const avoidAll = [...(brief.avoidHard||[]), ...(brief.avoidSoft||[])];
+  const msg = await client.messages.create({
+    model: SELECT_MODEL,
+    max_tokens: 2500,
+    messages: [{ role: 'user', content:
+`You are an expert art curator for Society6's trade program, choosing wall art for a client.
 
 CLIENT BRIEF:
 ${brief.briefSummary || ''}
 Project: ${brief.projectName || 'Trade Client'} (${brief.projectType || 'commercial'})
-Style: ${(brief.styleTags || []).join(', ') || 'not specified'}
-Palette: ${(brief.paletteTags || []).join(', ') || 'not specified'}
-Themes: ${(brief.keyThemes || []).join(', ') || 'not specified'}
-${subjectLine}
-${avoidLine}
-${refinementContext}
+Wants — style: ${(brief.styleTags||[]).join(', ')}; palette: ${(brief.paletteTags||[]).join(', ')}; subjects: ${(brief.subjectTokens||[]).join(', ')}
+Avoid: ${avoidAll.join(', ') || 'nothing specified'}
 
-CATALOG OPTIONS (index|title|collection|handle|styles|palette):
-${catalogList}
+CANDIDATES (index|title|artist|subject|style|palette):
+${list}
 
-Your task: Select the 20 artworks that best serve this client. Think like a curator — consider:
-- SUBJECT MATTER IS KING: Does the artwork's subject directly relate to the client's theme? A jazz club needs music art, not dark landscapes. A coastal hotel needs ocean art, not abstract geometry. Reject items where the subject is off-theme, even if colors match.
-- Does the title/subject matter fit the space and mood?
-- Do the style and palette tags align with what the client asked for?
-- Does the artwork cohesively contribute to a curated set — not just 20 random good pieces?
-- Does the collection source suggest the right medium (art print, canvas, etc.)?
-${prevItemTitles.length > 0 ? '- The client has already seen the "previously shown" list — give them genuinely different options.' : ''}
+Pick the ${FINAL_N} that form the most coherent curated set for this space. Favor breadth across artists.
+Reject anything whose SUBJECT clashes with the brief even if colors match. Honor the avoid list strictly.
 
-Return ONLY a valid JSON array with no markdown or explanation:
-[{"index": 0, "handle": "exact-product-handle", "reason": "one specific sentence explaining why this piece fits the brief"}]`;
-
-  // CHANGE 3: Upgrade to Sonnet for better curatorial judgment
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2500,
-    messages: [{ role: 'user', content: prompt }]
+Return ONLY a JSON array, no markdown:
+[{"index": 0, "reason": "one specific sentence on why it fits"}]`
+    }]
   });
-
-  let raw = message.content[0].text.trim();
-  // Strip any accidental markdown fences
-  raw = raw.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-  return JSON.parse(raw);
+  return JSON.parse(stripFences(msg.content[0].text));
 }
 
-// ——— Vision analysis: fetch seed images and have Claude describe them ————————
-// This is the highest-quality signal for Find Similar. Instead of relying on
-// Society6's inconsistent text metadata, we send the actual product images to
-// Claude Vision and get back rich descriptions of style, palette, subject,
-// mood, and composition.
-async function analyzeImagesWithVision(imageUrls, hasAnthropicKey) {
-  if (!hasAnthropicKey || imageUrls.length === 0) return null;
-
-  // Fetch images as base64 (concurrently, with timeouts)
-  const imageResults = await Promise.allSettled(
-    imageUrls.slice(0, 8).map(async (url) => {
-      const fullUrl = url.startsWith('/') ? 'https://society6.com' + url : url;
-      const res = await fetch(fullUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
-          'Accept': 'image/*',
-        },
-        signal: AbortSignal.timeout(6000),
-        redirect: 'follow',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const contentType = res.headers.get('content-type') || 'image/jpeg';
-      const mediaType = contentType.split(';')[0].trim();
-      const buffer = await res.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString('base64');
-      return { base64, mediaType, url: fullUrl };
-    })
-  );
-
-  const images = imageResults
-    .filter(r => r.status === 'fulfilled')
-    .map(r => r.value);
-
-  if (images.length === 0) {
-    console.warn('Vision analysis: no images could be fetched');
-    return null;
+// Final per-artist cap, then backfill from the pool to reach FINAL_N
+function applyFinalCap(picks, poolRows) {
+  const perArtist = {};
+  const chosen = [];
+  const used = new Set();
+  for (const p of picks) {
+    const c = poolRows[p.index];
+    if (!c) continue;
+    const a = c.artist_name;
+    if ((perArtist[a] || 0) >= FINAL_CAP) continue;
+    perArtist[a] = (perArtist[a] || 0) + 1;
+    chosen.push({ ...c, reason: p.reason });
+    used.add(c.s6_product_id);
+    if (chosen.length >= FINAL_N) break;
   }
-
-  try {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-    // Build the content array with images + text prompt
-    const content = [];
-    for (const img of images) {
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: img.mediaType,
-          data: img.base64,
-        },
-      });
-    }
-
-    content.push({
-      type: 'text',
-      text: `You are an expert art curator analyzing ${images.length} artwork image(s) from Society6. A user wants to find MORE artwork like these.
-
-Look at each image carefully and identify the common aesthetic thread. Analyze:
-- The ACTUAL visual content: what is depicted? (cocktails, landscapes, faces, abstract shapes, animals, etc.)
-- The artistic STYLE: is it a line drawing? watercolor? photograph? digital illustration? oil painting? minimal? maximalist?
-- The COLOR PALETTE: what specific colors dominate? Is it monochrome/black-and-white? Muted? Vibrant? Earth tones?
-- The MOOD: playful? sophisticated? moody? whimsical? elegant? gritty? serene?
-- The COMPOSITION: simple/centered? busy/collage? geometric? organic?
-
-Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
-{
-  "styleTags": ["5-10 art style keywords reflecting what you SEE — choose from and add to: modern, vintage, retro, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape, illustration, line-art, watercolor, pop-art, mid-century, art-deco, food-drink, monochrome, whimsical, elegant, graphic, hand-drawn, ink, sketch, folk-art, tropical, celestial, anatomical, architectural"],
-  "paletteTags": ["3-8 specific color keywords from what you SEE — e.g. black, white, bw, neutral, blue, navy, teal, green, sage, red, burgundy, orange, terracotta, pink, blush, purple, gold, metallic, warm, cool, earthy, muted, pastel, vibrant"],
-  "avoidTags": ["qualities that would clearly CLASH with this aesthetic — e.g. if seeds are minimal b&w line art, avoid 'vibrant', 'colorful', 'photographic', 'busy'"],
-  "keyThemes": ["4-6 short vibe phrases describing the shared visual identity — be specific, like 'vintage cocktail illustration' or 'moody black-and-white ink drawings' rather than generic 'nice art'"],
-  "searchKeywords": ["20-30 concrete words that would appear in SIMILAR artwork titles, descriptions, or alt text — be very specific: 'cocktail', 'martini', 'wine', 'bar', 'cheers', 'ink', 'sketch', 'line-drawing', 'botanical', 'anatomy', etc. These are used to search the catalog, so think about what words Society6 artists would use in their titles."],
-  "subjectMustMatch": ["1-4 PRIMARY subject categories from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome. 'food-drink' = cocktails, wine, coffee, bar art, culinary. 'monochrome' = black-and-white, ink, line drawings."],
-  "briefSummary": "2-3 sentence plain English summary of the visual aesthetic these images share, written as if briefing a curator to find more like this"
-}`
-    });
-
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1200,
-      messages: [{ role: 'user', content }],
-    });
-
-    let raw = message.content[0].text.trim();
-    raw = raw.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-    const analysis = JSON.parse(raw);
-    console.log('[vision] Analysis complete for', images.length, 'images:', analysis.briefSummary);
-    return analysis;
-  } catch (e) {
-    console.warn('Vision analysis failed:', e.message);
-    return null;
+  for (const c of poolRows) {
+    if (chosen.length >= FINAL_N) break;
+    if (used.has(c.s6_product_id)) continue;
+    const a = c.artist_name;
+    if ((perArtist[a] || 0) >= FINAL_CAP) continue;
+    perArtist[a] = (perArtist[a] || 0) + 1;
+    chosen.push({ ...c, reason: '' });
+    used.add(c.s6_product_id);
   }
+  return chosen;
 }
 
-// Attempt to get a product image URL from a Society6 product page.
-// For catalog-matched seeds we already have image_url; for unmatched seeds
-// we scrape the product page's Open Graph image tag.
-async function fetchOgImage(productUrl) {
-  try {
-    const fullUrl = productUrl.startsWith('/') ? 'https://society6.com' + productUrl : productUrl;
-    const res = await fetch(fullUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
-        'Accept': 'text/html',
-      },
-      signal: AbortSignal.timeout(5000),
-      redirect: 'follow',
-    });
-    if (!res.ok) return null;
-    const html = (await res.text()).slice(0, 200_000);
-    const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
-}
-
-// ——— Find Similar: build a synthetic brief from seed product URLs ——————————
-// The hybrid approach: aggregate tags from catalog matches (cheap, deterministic)
-// then have Claude VISION analyze the actual images (catches everything text misses).
-// Falls back to text-only analysis if images can't be fetched.
-async function buildBriefFromSeeds(seedUrls, allRecords, hasAnthropicKey) {
-  // Strip Society6 format suffixes from a product handle so that
-  // "cheers-vintage-cocktails_framed-art-print" becomes
-  // "cheers-vintage-cocktails". The catalog often stores the base handle
-  // without the format qualifier.
-  const FORMAT_SUFFIXES = [
-    'framed-art-print', 'art-print', 'mini-art-print', 'canvas-print',
-    'wood-wall-art', 'metal-print', 'acrylic-block', 'poster',
-    'wall-tapestry', 'throw-pillow', 'wall-mural',
-  ];
-  const stripFormatSuffix = (handle) => {
-    if (!handle) return handle;
-    for (const suffix of FORMAT_SUFFIXES) {
-      if (handle.endsWith('_' + suffix) || handle.endsWith('-' + suffix)) {
-        return handle.slice(0, -(suffix.length + 1));
-      }
-    }
-    return handle;
-  };
-
-  const handleOf = (url) => {
-    if (!url) return null;
-    const m = (url || '').match(/\/products\/([^?\/#]+)/);
-    return m ? m[1] : null;
-  };
-
-  const matchedSeeds = [];
-  const unmatchedUrls = [];
-  for (const url of seedUrls) {
-    const rawHandle = handleOf(url);
-    if (!rawHandle) { unmatchedUrls.push(url); continue; }
-    const baseHandle = stripFormatSuffix(rawHandle);
-
-    // Try exact match first, then base handle, then substring
-    const rec = allRecords.find(r =>
-      r.product_handle === rawHandle ||
-      r.product_handle === baseHandle ||
-      (r.product_url || '').includes(rawHandle) ||
-      (r.product_url || '').includes(baseHandle)
-    );
-    if (rec) matchedSeeds.push(tagRecord(rec));
-    else unmatchedUrls.push(url);
-  }
-
-  // Aggregate tag frequencies from matched seeds
-  const tagCount = (field) => {
-    const counts = {};
-    for (const s of matchedSeeds) {
-      for (const tag of s[field] || []) counts[tag] = (counts[tag] || 0) + 1;
-    }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
-  };
-  const seedStyles = tagCount('style');
-  const seedPalette = tagCount('palette');
-  const seedSubjects = seedStyles.filter(s => SUBJECT_TAGS.includes(s));
-
-  // Extract meaningful words from unmatched URL slugs as a scoring signal.
-  // e.g. "cheers-vintage-cocktails" → ['cheers', 'vintage', 'cocktails']
-  const unmatchedSlugWords = unmatchedUrls.flatMap(u => {
-    const m = u.match(/\/products\/([^?\/#]+)/);
-    if (!m) return [];
-    return stripFormatSuffix(m[1])
-      .replace(/[-_]+/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length >= 4 && !['print','canvas','wood','framed','mini','metal','acrylic','poster','tapestry','pillow','mural','block'].includes(w));
-  });
-
-  // Tag-only baseline brief — used if Claude unavailable
-  const baselineBrief = {
-    projectName: 'Find Similar',
-    clientName: '',
-    location: '',
-    projectType: 'other',
-    styleTags: seedStyles.slice(0, 6),
-    paletteTags: seedPalette.slice(0, 6),
-    avoidTags: [],
-    galleryWall: false,
-    targetPieceCount: null,
-    rooms: [],
-    keyThemes: seedStyles.slice(0, 3),
-    searchKeywords: Array.from(new Set([
-      ...seedStyles,
-      ...seedPalette,
-      // Pull meaningful words from seed titles as extra scoring signal
-      ...matchedSeeds.flatMap(s => (s.title || '').toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter(w => w.length >= 4 && !['print','canvas','wood','framed','mini','metal','acrylic'].includes(w))
-      ),
-      // Also include words from unmatched URL slugs
-      ...unmatchedSlugWords,
-    ])).slice(0, 30),
-    subjectMustMatch: seedSubjects,
-    briefSummary: `Find artwork similar to ${matchedSeeds.length} seed product(s).`,
-    parsedBy: 'tag-aggregate',
-    findSimilarSeeds: matchedSeeds.length,
-    findSimilarUnmatched: unmatchedUrls.length,
-  };
-
-  if (!hasAnthropicKey || (matchedSeeds.length === 0 && unmatchedUrls.length === 0)) {
-    return baselineBrief;
-  }
-
-  // —— Step 2a: Vision analysis (primary signal) ——————————————————————————
-  // Fetch actual product images and have Claude look at them. This is far
-  // more accurate than text metadata because Society6 tagging is inconsistent.
-  // Collect image URLs: matched seeds have image_url in the catalog record;
-  // unmatched seeds need their OG image scraped from the product page.
-  const imageUrls = [];
-  for (const s of matchedSeeds.slice(0, 6)) {
-    if (s.image_url) imageUrls.push(s.image_url);
-  }
-  // For unmatched seeds, try to scrape the OG image from the product page
-  if (unmatchedUrls.length > 0) {
-    const ogResults = await Promise.allSettled(
-      unmatchedUrls.slice(0, 4).map(fetchOgImage)
-    );
-    for (const r of ogResults) {
-      if (r.status === 'fulfilled' && r.value) imageUrls.push(r.value);
-    }
-  }
-
-  let visionAnalysis = null;
-  if (imageUrls.length > 0) {
-    visionAnalysis = await analyzeImagesWithVision(imageUrls, hasAnthropicKey);
-  }
-
-  // If vision succeeded, use it as the primary signal (much richer than text tags)
-  if (visionAnalysis) {
-    return {
-      ...baselineBrief,
-      styleTags: Array.isArray(visionAnalysis.styleTags) ? visionAnalysis.styleTags : baselineBrief.styleTags,
-      paletteTags: Array.isArray(visionAnalysis.paletteTags) ? visionAnalysis.paletteTags : baselineBrief.paletteTags,
-      avoidTags: Array.isArray(visionAnalysis.avoidTags) ? visionAnalysis.avoidTags : [],
-      keyThemes: Array.isArray(visionAnalysis.keyThemes) ? visionAnalysis.keyThemes : baselineBrief.keyThemes,
-      // Merge vision keywords with text-derived keywords for maximum coverage
-      searchKeywords: Array.from(new Set([
-        ...(Array.isArray(visionAnalysis.searchKeywords) ? visionAnalysis.searchKeywords : []),
-        ...baselineBrief.searchKeywords,
-      ])).slice(0, 40),
-      subjectMustMatch: Array.isArray(visionAnalysis.subjectMustMatch)
-        ? visionAnalysis.subjectMustMatch.filter(s => SUBJECT_TAGS.includes((s || '').toLowerCase()))
-        : baselineBrief.subjectMustMatch,
-      briefSummary: visionAnalysis.briefSummary || baselineBrief.briefSummary,
-      parsedBy: 'find-similar-vision',
-    };
-  }
-
-  // —— Step 2b: Text-only Claude fallback (if vision failed) ——————————————
-  // Falls back to the old approach: analyze text metadata only.
-  console.warn('Vision analysis unavailable, falling back to text-only Claude analysis');
-  try {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-    const seedList = matchedSeeds.slice(0, 20).map((s, i) =>
-      `${i + 1}. ${s.title} | collection:${s.source_collection} | alt:${s.image_alt || ''} | styles:${(s.style||[]).join(',')} | palette:${(s.palette||[]).join(',')}`
-    ).join('\n');
-    const unmatchedList = unmatchedUrls.slice(0, 10).map(u => {
-      const slugMatch = u.match(/\/products\/([^?\/#]+)/);
-      if (slugMatch) {
-        const words = stripFormatSuffix(slugMatch[1])
-          .replace(/[-_]+/g, ' ')
-          .trim();
-        return `- ${u} (inferred from slug: "${words}")`;
-      }
-      return `- ${u}`;
-    }).join('\n');
-
-    const prompt = `You are an expert art curator. A user is in "find similar" mode — they've pasted Society6 product URLs and want recommendations of artwork with a similar aesthetic.
-
-${seedList ? `SEED PRODUCTS (matched in catalog):\n${seedList}\n` : '(No seeds matched the catalog — use the URL slugs below to infer the aesthetic.)\n'}
-${unmatchedList ? `SEED URLs (not in catalog — infer aesthetic from slug keywords):\n${unmatchedList}\n` : ''}
-
-Aggregated seed tags:
-- Styles seen: ${seedStyles.join(', ') || 'none'}
-- Palette seen: ${seedPalette.join(', ') || 'none'}
-- Subjects: ${seedSubjects.join(', ') || 'none'}
-
-Your job: synthesize a brief that captures the common aesthetic thread across these seeds. Go deeper than the raw tags — identify the underlying vibe (e.g. "moody urban photography with warm neutrals" vs. just "urban, warm").
-
-Return ONLY valid JSON (no markdown, no explanation) with exactly these fields:
-{
-  "styleTags": ["art style keywords reflecting the shared aesthetic — e.g. modern, vintage, abstract, photography, coastal, dramatic, music, urban, bohemian, minimalist, rustic, floral, landscape, food-drink, monochrome, illustration"],
-  "paletteTags": ["color keywords — e.g. purple, dark, blue, neutral, green, warm, black, metallic, earthy, red, pink, orange, bw, white"],
-  "avoidTags": ["qualities that would clash with the seed aesthetic"],
-  "keyThemes": ["3-6 short vibe phrases describing the shared mood"],
-  "searchKeywords": ["15-25 concrete words that would appear in similar artwork titles/descriptions — specific things like 'saxophone', 'cobalt', 'terracotta', 'geometric', 'cocktail', 'martini'"],
-  "subjectMustMatch": ["the 1-4 PRIMARY subject categories (from: music, coastal, floral, landscape, urban, animal, southern, typography, abstract, food-drink, monochrome). If the seeds are all music-themed, this is ['music']. If mixed, include each. 'food-drink' covers cocktails, wine, coffee, bar art, kitchen/dining themes. 'monochrome' covers black-and-white line drawings, ink art, etc."],
-  "briefSummary": "2-3 sentence plain English summary of the aesthetic this user is looking for"
-}`;
-
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    let raw = message.content[0].text.trim();
-    raw = raw.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-    const refined = JSON.parse(raw);
-
-    return {
-      ...baselineBrief,
-      styleTags: Array.isArray(refined.styleTags) ? refined.styleTags : baselineBrief.styleTags,
-      paletteTags: Array.isArray(refined.paletteTags) ? refined.paletteTags : baselineBrief.paletteTags,
-      avoidTags: Array.isArray(refined.avoidTags) ? refined.avoidTags : [],
-      keyThemes: Array.isArray(refined.keyThemes) ? refined.keyThemes : baselineBrief.keyThemes,
-      searchKeywords: Array.isArray(refined.searchKeywords) ? refined.searchKeywords : baselineBrief.searchKeywords,
-      subjectMustMatch: Array.isArray(refined.subjectMustMatch)
-        ? refined.subjectMustMatch.filter(s => SUBJECT_TAGS.includes((s || '').toLowerCase()))
-        : baselineBrief.subjectMustMatch,
-      briefSummary: refined.briefSummary || baselineBrief.briefSummary,
-      parsedBy: 'find-similar-claude',
-    };
-  } catch (e) {
-    console.warn('Find Similar Claude refinement failed, using tag-only brief:', e.message);
-    return baselineBrief;
-  }
-}
-
-// Merge two briefs by taking the union of list fields. The "primary" brief's
-// scalar fields (projectName, clientName, briefSummary) win. Used when user
-// provides BOTH a Jotform brief AND find-similar URLs.
-function mergeBriefs(primary, supplemental) {
-  if (!primary) return supplemental;
-  if (!supplemental) return primary;
-  const unionList = (a = [], b = []) => Array.from(new Set([...(a || []), ...(b || [])]));
-  return {
-    ...primary,
-    styleTags: unionList(primary.styleTags, supplemental.styleTags),
-    paletteTags: unionList(primary.paletteTags, supplemental.paletteTags),
-    avoidTags: unionList(primary.avoidTags, supplemental.avoidTags),
-    keyThemes: unionList(primary.keyThemes, supplemental.keyThemes),
-    searchKeywords: unionList(primary.searchKeywords, supplemental.searchKeywords),
-    subjectMustMatch: unionList(primary.subjectMustMatch, supplemental.subjectMustMatch),
-    rooms: unionList(primary.rooms, supplemental.rooms),
-    parsedBy: `${primary.parsedBy || 'unknown'}+${supplemental.parsedBy || 'unknown'}`,
-  };
-}
-
-// ——— Regex Brief Parser (fallback when no API key) ———————————————————————
-function parseBriefFallback(text) {
-  if (!text) return defaultBrief();
-
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const get = (label) => {
-    const re = new RegExp(`(?:^|[\\?])\\s*${label}\\s*[:\\-\\?]\\s*(.+)`, 'i');
-    for (const line of lines) {
-      const m = line.match(re);
-      if (m) return m[1].trim();
-    }
-    return '';
-  };
-
-  const projectName = get('Design Project') || get('Design Project Name') || get('Project Name') || get('Name') || get('Project');
-  const clientName = get('Company Name') || get('Client Name') || get('Property Name') || get('Business Name') || get('Company') || '';
-  const location = get('Location') || get('City') || get('Project Location') || '';
-
-  const projectTypeLine = (get('Project Type') || get('Type') || '').toLowerCase();
-  let projectType = 'other';
-  if (/restaurant|dining|cafe|bar/.test(projectTypeLine)) projectType = 'restaurant';
-  else if (/hotel|hospitality|resort/.test(projectTypeLine)) projectType = 'hotel';
-  else if (/vacation rental|vrbo|airbnb|short.?term/.test(projectTypeLine)) projectType = 'vacation_rental';
-  else if (/office|corporate|workspace/.test(projectTypeLine)) projectType = 'office';
-
-  const pieceField = get('Target Pieces') || get('Pieces') || get('Target') || get('How many');
-  let targetPieceCount = null;
-  if (pieceField) {
-    const n = pieceField.match(/(\d+)/);
-    if (n) targetPieceCount = parseInt(n[1]);
-  }
-
-  const fullLower = text.toLowerCase();
-
-  const styleMap = {
-    music: /music|jazz|blues|rock|vinyl|instrument|guitar|piano|trumpet|saxophone|musician|album|concert/,
-    abstract: /abstract|geometric|expressionist|surreal/,
-    photography: /photo|photograph/,
-    illustration: /illustrat|drawing|sketch/,
-    vintage: /vintage|retro|antique|old.?school/,
-    modern: /modern|contemporary|minimal/,
-    coastal: /coastal|beach|ocean|nautical|wave|surf/,
-    dramatic: /dramatic|bold|moody|dark|statement/,
-    urban: /urban|city|street|industrial|skyline/,
-    southern: /\b(southern|rustic|farmhouse|boho|bohemian)\b/,
-  };
-  const paletteMap = {
-    purple: /purple|violet|lavender|plum/,
-    blue: /blue|navy|teal|indigo/,
-    green: /green|sage|olive|emerald/,
-    black: /black|dark|charcoal/,
-    metallic: /gold|silver|metallic|brass/,
-    red: /red|crimson|burgundy/,
-    orange: /orange|terracotta|rust|amber/,
-    neutral: /neutral|beige|cream|ivory/,
-    warm: /warm|earthy|earth.?tone/,
-  };
-
-  const styleTags = Object.entries(styleMap).filter(([, re]) => re.test(fullLower)).map(([k]) => k);
-  const paletteTags = Object.entries(paletteMap).filter(([, re]) => re.test(fullLower)).map(([k]) => k);
-
-  const avoidRaw = (get('Avoid') || get('What to avoid') || get('Please avoid') || '').toLowerCase();
-  const avoidMap = {
-    light: /light|airy|pastel|bright/,
-    floral: /floral|flower|botanical/,
-    kids: /kids|children|cartoon/,
-    landscape: /landscape|nature|scenery/,
-    typography: /typography|text|quotes|lettering/,
-    dark: /dark|moody|skulls/,
-  };
-  const avoidTags = Object.entries(avoidMap).filter(([, re]) => re.test(avoidRaw)).map(([k]) => k);
-
-  const galleryField = (get('Gallery Wall') || '').toLowerCase();
-  const galleryWall = galleryField.includes('yes') || fullLower.includes('gallery wall');
-
-  const briefSummary = `${projectType} project seeking ${styleTags.join(', ')} wall art in ${paletteTags.join(', ')} tones.`;
-
-  return {
-    projectName, clientName, location, projectType,
-    styleTags, paletteTags, avoidTags, galleryWall,
-    targetPieceCount, rooms: [],
-    keyThemes: styleTags.slice(0, 3),
-    searchKeywords: [...styleTags, ...paletteTags],
-    subjectMustMatch: styleTags.filter(s => !['dramatic', 'modern', 'vintage'].includes(s)),
-    briefSummary
-  };
-}
-
-function defaultBrief() {
-  return {
-    projectName: '', clientName: '', location: '',
-    projectType: 'other', styleTags: [], paletteTags: [],
-    avoidTags: [], galleryWall: false, targetPieceCount: null,
-    rooms: [], keyThemes: [], searchKeywords: [],
-    subjectMustMatch: [], briefSummary: ''
-  };
-}
-
-// ——— Catalog tagging ——————————————————————————————————————————————————————
-function tagRecord(r) {
-  const text = `${r.title || ''} ${r.image_alt || ''} ${r.source_collection || ''} ${r.product_handle || ''}`.toLowerCase();
-
-  const style = [];
-  const palette = [];
-
-  if (/jazz|blues|rock|hip.?hop|music|band|concert|vinyl|instrument|guitar|piano|trumpet|saxophone|drum|melody|musician|album|lyric|rhythm|record|boombox|microphone|turntable/.test(text)) style.push('music');
-  if (/abstract|geometric|expressionist|generative|surreal/.test(text)) style.push('abstract');
-  if (/photo|photograph/.test(text)) style.push('photography');
-  if (/illustrat|drawing|sketch|line.?art|line.?draw|hand.?drawn|ink|doodle|cartoon/.test(text)) style.push('illustration');
-  if (/vintage|retro|antique|old.?school|classic|mid.?century/.test(text)) style.push('vintage');
-  if (/modern|contemporary|minimal/.test(text)) style.push('modern');
-  if (/coastal|beach|ocean|nautical|wave|surf|sea/.test(text)) style.push('coastal');
-  if (/floral|flower|botanical|garden|bloom|peon(y|ies)|tulip|rose|anemone|lily|daisy|orchid|bouquet|blossom/.test(text)) style.push('floral');
-  if (/landscape|mountain|forest|nature|scenic/.test(text)) style.push('landscape');
-  if (/typography|lettering|quote|word|phrase/.test(text)) style.push('typography');
-  if (/city|urban|street|skyline|downtown/.test(text)) style.push('urban');
-  if (/animal|cat|dog|bird|wildlife|fox|wolf|bear|deer/.test(text)) style.push('animal');
-  if (/dark|moody|noir|dramatic|bold|gritty/.test(text)) style.push('dramatic');
-  if (/southern|rustic|farmhouse|country|boho|bohemian/.test(text)) style.push('southern');
-  if (/watercolor|pastel|soft|airy|light|bright|spring/.test(text)) style.push('light');
-  // Food, drink, cocktail, bar — common trade brief subjects
-  if (/cocktail|drink|wine|beer|bar\b|martini|whiskey|bourbon|champagne|toast|cheers|liquor|spirits|coffee|cafe|latte|espresso|food|culinary|kitchen|dining|chef|recipe|restaurant/.test(text)) style.push('food-drink');
-  // Black-and-white / monochrome aesthetic
-  if (/\bb&w\b|black.?and.?white|monochrome|monochromatic|greyscale|grayscale|ink.?draw/.test(text)) style.push('monochrome');
-
-  if (/purple|violet|lavender|plum|amethyst/.test(text)) palette.push('purple');
-  if (/blue|navy|teal|indigo|cobalt/.test(text)) palette.push('blue');
-  if (/green|sage|olive|forest|emerald/.test(text)) palette.push('green');
-  if (/black|dark|charcoal|ebony|noir|onyx/.test(text)) palette.push('black');
-  if (/\bb&w\b|black.?and.?white|monochrome|monochromatic/.test(text)) palette.push('bw');
-  if (/gold|silver|metallic|brass|bronze|gilded/.test(text)) palette.push('metallic');
-  if (/red|crimson|burgundy|wine|maroon/.test(text)) palette.push('red');
-  if (/orange|terracotta|rust|amber|burnt/.test(text)) palette.push('orange');
-  if (/pink|blush|rose|coral|magenta/.test(text)) palette.push('pink');
-  if (/neutral|beige|ivory|cream|tan|linen/.test(text)) palette.push('neutral');
-  if (/warm|earthy|earth.?tone|sienna|ochre/.test(text)) palette.push('warm');
-  if (/white|clean|crisp|minimal/.test(text)) palette.push('white');
-
-  return { ...r, style, palette };
-}
-
-// ——— Subject-matter categories for mismatch detection ————————————————————
-// These are "concrete subject" tags. Mood/aesthetic tags like 'dramatic' and
-// 'modern' are excluded because they describe HOW something looks, not WHAT
-// the artwork depicts.
-const SUBJECT_TAGS = ['music', 'coastal', 'floral', 'landscape', 'urban', 'animal', 'southern', 'typography', 'abstract', 'food-drink', 'monochrome'];
-
-// ——— Product type categorization —————————————————————————————————————————
-// Maps a catalog record's source_collection to a coarse product category,
-// used by the product-type filter UI (exclude wood / include pillows / wall
-// prints only / posters only). Defensive against unexpected collection names.
-function productCategory(sourceCollection) {
-  const sc = (sourceCollection || '').toLowerCase().trim();
-  if (!sc) return 'other';
-  if (/throw.?pillow|\bpillow/.test(sc)) return 'pillow';
-  if (/\bwood/.test(sc)) return 'wood';
-  if (/poster/.test(sc)) return 'poster';
-  // Paper prints: art-prints, framed-art-prints, mini-art-prints
-  if (/(^|-)((mini|framed)-)?art-prints?(-|$)/.test(sc) || sc === 'art-prints') return 'wall-print';
-  if (/canvas/.test(sc)) return 'canvas';
-  if (/metal/.test(sc)) return 'metal';
-  if (/acrylic/.test(sc)) return 'acrylic';
-  if (/tapestry|tapestries|mural/.test(sc)) return 'other-wall-art';
-  return 'other';
-}
-
-// Apply the user's product-type filters. Returns true if the record should
-// remain in the candidate pool.
-function passesProductFilters(record, filters) {
-  if (!filters) return true;
-  const cat = productCategory(record.source_collection);
-
-  // Pillows are a separate product type. Opt-in only via includePillows toggle.
-  // They bypass the wall-art format radio entirely.
-  if (cat === 'pillow') return !!filters.includePillows;
-
-  // Wall art handling ----
-  if (cat === 'wood' && filters.excludeWood) return false;
-
-  if (filters.wallArtMode === 'prints') return cat === 'wall-print';
-  if (filters.wallArtMode === 'posters') return cat === 'poster';
-
-  // 'all' (or unset): keep everything else that wasn't filtered out above
-  return true;
-}
-
-// ——— Full-catalog scoring (runs on every record) ——————————————————————————
-// Vision-aware: when a record has been enriched by /api/catalog/enrich, its
-// visionStyle / visionPalette / visionSubject / visionKeywords fields override
-// or augment the regex-derived tags. Records without vision data fall back to
-// the original tagRecord() output, so partial enrichment works fine.
-function scoreRecord(r, brief) {
-  let score = 0;
-  const baseText = `${r.title || ''} ${r.image_alt || ''} ${r.product_handle || ''}`.toLowerCase();
-
-  const regexStyle = r.style || [];
-  const regexPalette = r.palette || [];
-  const visionStyle = Array.isArray(r.visionStyle) ? r.visionStyle : [];
-  const visionPalette = Array.isArray(r.visionPalette) ? r.visionPalette : [];
-  const visionSubject = Array.isArray(r.visionSubject) ? r.visionSubject : null;
-  const visionKeywords = Array.isArray(r.visionKeywords) ? r.visionKeywords : [];
-  const visionSummary = typeof r.visionSummary === 'string' ? r.visionSummary.toLowerCase() : '';
-
-  // For keyword matching, fold vision keywords + summary into the searchable
-  // text. This is where vision earns its keep — Society6 titles are sparse,
-  // but a vision-enriched record also carries words like "cocktail", "ink",
-  // "saxophone" pulled directly from the image.
-  const text = (visionKeywords.length > 0 || visionSummary)
-    ? `${baseText} ${visionKeywords.join(' ')} ${visionSummary}`
-    : baseText;
-
-  // Style/palette: union of regex + vision when both exist, vision-only when
-  // regex didn't fire, regex-only when not yet enriched. Both signals are
-  // useful — regex catches title-level matches, vision catches what the
-  // title misses.
-  const style = visionStyle.length > 0
-    ? Array.from(new Set([...regexStyle, ...visionStyle]))
-    : regexStyle;
-  const palette = visionPalette.length > 0
-    ? Array.from(new Set([...regexPalette, ...visionPalette]))
-    : regexPalette;
-
-  // Style tag matches (+3 each)
-  for (const s of brief.styleTags || []) {
-    if (style.includes(s)) score += 3;
-  }
-
-  // Palette matches (+2 each)
-  for (const p of brief.paletteTags || []) {
-    if (palette.includes(p)) score += 2;
-  }
-
-  // searchKeywords — specific words like "jazz", "saxophone", "vinyl"
-  // that directly match catalog text — most precise signal. Vision
-  // keywords are baked into `text` above so they participate here.
-  for (const kw of brief.searchKeywords || []) {
-    if (kw.length >= 3 && text.includes(kw.toLowerCase())) score += 4;
-  }
-
-  // keyThemes phrase matching — split each theme into words
-  for (const theme of brief.keyThemes || []) {
-    for (const word of theme.toLowerCase().split(/\s+/).filter(w => w.length >= 4)) {
-      if (text.includes(word)) score += 2;
-    }
-  }
-
-  // Hard penalize avoid tags
-  for (const a of brief.avoidTags || []) {
-    if (style.includes(a) || text.includes(a)) score -= 8;
-  }
-
-  // CHANGE 1: Subject-mismatch penalty
-  // If the brief has specific subject requirements (e.g., "music"),
-  // penalize items that have a DIFFERENT concrete subject tag but NOT
-  // the required one. This prevents dark nature photos from sneaking
-  // into a jazz brief just because they match on palette/mood.
-  //
-  // When vision has identified subjects, prefer those — they're far more
-  // accurate than the regex-derived ones, since the regex matches on title
-  // text which Society6 artists don't tag consistently.
-  const requiredSubjects = brief.subjectMustMatch || [];
-  if (requiredSubjects.length > 0) {
-    const itemSubjects = visionSubject !== null
-      ? visionSubject
-      : style.filter(s => SUBJECT_TAGS.includes(s));
-    const hasRequiredSubject = itemSubjects.some(s => requiredSubjects.includes(s));
-
-    if (itemSubjects.length > 0 && !hasRequiredSubject) {
-      // Item has a concrete subject (e.g. "landscape") that doesn't match
-      // any required subject (e.g. "music") — penalize HARD so it drops
-      // well below matching items even if colors/palette align
-      score -= 15;
-    } else if (hasRequiredSubject) {
-      // Item matches a required subject — big bonus
-      score += 8;
-    }
-  }
-
-  // Small boost for best-selling collections
-  if (r.source_collection?.includes('best-selling')) score += 1;
-
-  return score;
-}
-
-function normalizeUrl(r) {
-  const base = 'https://society6.com';
+// Pass-through normalizer — image_url and product_url are already full
+// cdn.shopify.com / society6 URLs in the new catalog. Map to the shape the
+// front end expects (it reads product_handle/source_collection historically;
+// we alias them so page.jsx keeps working unchanged).
+function toCard(r) {
   return {
     ...r,
-    product_url: r.product_url
-      ? (r.product_url.startsWith('http') ? r.product_url : base + r.product_url)
-      : '',
-    image_url: r.image_url
-      ? (r.image_url.startsWith('http') ? r.image_url : base + r.image_url)
-      : '',
+    product_handle: r.s6_product_id,         // stable id alias
+    source_collection: r.product_type || '', // legacy field name the UI reads
   };
 }
 
-// ——— Route Handler ————————————————————————————————————————————————————————
+// ——— Route handler ——————————————————————————————————————————————————————————
 export async function POST(request) {
   try {
     let briefText = '';
-    let moodboardUrl = '';
-    let refineFeedback = '';
-    let prevItemTitles = [];
     let pinnedUrls = [];
-    let productFilters = null;
     let findSimilarUrls = [];
 
     const contentType = request.headers.get('content-type') || '';
-
     if (contentType.includes('multipart/form-data')) {
       const formData = await request.formData();
       briefText = formData.get('brief') || '';
-      moodboardUrl = formData.get('moodboardUrl') || '';
-      refineFeedback = formData.get('refineFeedback') || '';
-      try { prevItemTitles = JSON.parse(formData.get('prevItemTitles') || '[]'); } catch {}
       try { pinnedUrls = JSON.parse(formData.get('pinnedUrls') || '[]'); } catch {}
-      try { productFilters = JSON.parse(formData.get('productFilters') || 'null'); } catch {}
       try { findSimilarUrls = JSON.parse(formData.get('findSimilarUrls') || '[]'); } catch {}
-
-      const file = formData.get('moodboard');
-      if (file && file.size > 0) {
-        try {
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('PDF timeout')), 4000));
-          const pdfPromise = (async () => {
-            const pdfParse = (await import('pdf-parse')).default;
-            const data = await pdfParse(Buffer.from(await file.arrayBuffer()));
-            return data.text || '';
-          })();
-          const pdfText = await Promise.race([pdfPromise, timeoutPromise]);
-          if (pdfText) briefText += `\n\n--- MOODBOARD NOTES ---\n${pdfText}`;
-        } catch (e) {
-          console.warn('PDF skip:', e.message);
-        }
-      }
     } else {
       const body = await request.json();
       briefText = body.brief || '';
-      moodboardUrl = body.moodboardUrl || '';
-      refineFeedback = body.refineFeedback || '';
-      prevItemTitles = body.prevItemTitles || [];
       pinnedUrls = body.pinnedUrls || [];
-      productFilters = body.productFilters || null;
       findSimilarUrls = body.findSimilarUrls || [];
     }
 
-    // Normalize findSimilarUrls: accept array or newline-separated string
-    if (typeof findSimilarUrls === 'string') {
-      findSimilarUrls = findSimilarUrls.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!process.env.DATABASE_URL) {
+      return NextResponse.json({ error: 'Catalog database not configured (DATABASE_URL missing).' }, { status: 500 });
     }
-    findSimilarUrls = (Array.isArray(findSimilarUrls) ? findSimilarUrls : [])
-      .map(u => (u || '').trim())
-      .filter(Boolean);
 
-    // —— Optional: fetch moodboard URL and append extracted text to brief ——
-    // Best-effort only. ANY failure (timeout, bad URL, blocked scraper, parse
-    // error, unexpected exception) is swallowed so the recommendation flow
-    // continues unchanged. The extracted text is clearly labelled so Claude
-    // can weigh it against the explicit Jotform answers rather than being
-    // overridden by it.
-    if (moodboardUrl && typeof moodboardUrl === 'string' && moodboardUrl.trim()) {
-      try {
-        let cleanUrl = moodboardUrl.trim();
-        if (!/^https?:\/\//i.test(cleanUrl)) cleanUrl = 'https://' + cleanUrl;
-        // Validate it parses as a URL before fetching.
-        const _parsed = new URL(cleanUrl);
-        const res = await fetch(cleanUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; S6TradeCurationBot/1.0)',
-            'Accept': 'text/html,application/xhtml+xml',
-          },
-          signal: AbortSignal.timeout(4000),
-          redirect: 'follow',
-        });
-        if (res.ok) {
-          const ctype = (res.headers.get('content-type') || '').toLowerCase();
-          if (ctype.includes('text/html') || ctype.includes('application/xhtml')) {
-            // Cap body read at ~500KB so a huge page can't blow up memory.
-            const rawHtml = (await res.text()).slice(0, 500_000);
+    const hasBriefText = !!(briefText || '').trim();
+    const hasSeeds = (Array.isArray(findSimilarUrls) ? findSimilarUrls : []).length > 0;
 
-            const pick = (re) => {
-              const m = rawHtml.match(re);
-              return m ? m[1].trim() : '';
-            };
-            const decode = (s) => s
-              .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-              .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
-
-            const title       = decode(pick(/<title[^>]*>([\s\S]*?)<\/title>/i));
-            const metaDesc    = decode(pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i));
-            const ogTitle     = decode(pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i));
-            const ogDesc      = decode(pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i));
-            const ogSiteName  = decode(pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i));
-            const twitterDesc = decode(pick(/<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["']/i));
-
-            // Collect up to 25 alt texts (good signal on Pinterest/Houzz boards).
-            const alts = [];
-            const altRe = /<img[^>]+alt=["']([^"']{3,120})["']/gi;
-            let am;
-            while ((am = altRe.exec(rawHtml)) !== null && alts.length < 25) {
-              const a = decode(am[1]).trim();
-              if (a && !/^(image|photo|picture|logo|icon)$/i.test(a)) alts.push(a);
-            }
-
-            const lines = [
-              ogSiteName && `Source: ${ogSiteName}`,
-              (ogTitle || title) && `Title: ${ogTitle || title}`,
-              (ogDesc || metaDesc || twitterDesc) && `Description: ${ogDesc || metaDesc || twitterDesc}`,
-              alts.length && `Image captions: ${alts.join(' | ')}`,
-            ].filter(Boolean);
-
-            // Only append if we actually extracted something useful.
-            const extracted = lines.join('\n').slice(0, 3000);
-            if (extracted.trim().length > 20) {
-              briefText += `\n\n--- MOODBOARD URL NOTES (source: ${cleanUrl}) ---\n${extracted}\n--- END MOODBOARD URL NOTES (treat as supplemental inspiration; Jotform answers take precedence if they conflict) ---`;
-            } else {
-              console.warn('Moodboard URL: no useful metadata extracted, skipping.');
-            }
-          } else {
-            console.warn('Moodboard URL: non-HTML content-type, skipping:', ctype);
-          }
-        } else {
-          console.warn('Moodboard URL: fetch returned', res.status);
-        }
-      } catch (e) {
-        // Swallow everything — never let a bad moodboard URL break recommendations.
-        console.warn('Moodboard URL skip:', e && e.message ? e.message : e);
-      }
+    if (!hasBriefText && hasSeeds) {
+      return NextResponse.json({
+        error: 'Find Similar is being rebuilt against the new catalog and is temporarily unavailable. Please use a brief for now.',
+      }, { status: 400 });
+    }
+    if (!hasBriefText) {
+      return NextResponse.json({ error: 'Please provide a curation brief.' }, { status: 400 });
     }
 
     const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
-    const store = getStore('catalog');
 
-    const raw = await store.get('records', { type: 'text' });
-    if (!raw) {
-      return NextResponse.json(
-        { error: 'No catalog loaded. Please upload your catalog first via /catalog.' },
-        { status: 400 }
-      );
-    }
-
-    let allRecords;
-    try {
-      allRecords = JSON.parse(raw);
-    } catch {
-      return NextResponse.json({ error: 'Catalog data corrupted.' }, { status: 500 });
-    }
-
-    // —— Catalog breakdown by product category (pre-filter) ————————————————
-    // Computed on the full catalog so the UI can warn users when a filter
-    // they enabled has zero matching records (e.g., "Include throw pillows"
-    // against a wall-art-only catalog).
-    const catalogBreakdown = {
-      wallPrint: 0,
-      poster: 0,
-      canvas: 0,
-      wood: 0,
-      metal: 0,
-      acrylic: 0,
-      otherWallArt: 0,
-      pillow: 0,
-      other: 0,
-    };
-    let enrichedCount = 0;
-    for (const r of allRecords) {
-      const cat = productCategory(r.source_collection);
-      if (cat === 'wall-print') catalogBreakdown.wallPrint++;
-      else if (cat === 'poster') catalogBreakdown.poster++;
-      else if (cat === 'canvas') catalogBreakdown.canvas++;
-      else if (cat === 'wood') catalogBreakdown.wood++;
-      else if (cat === 'metal') catalogBreakdown.metal++;
-      else if (cat === 'acrylic') catalogBreakdown.acrylic++;
-      else if (cat === 'other-wall-art') catalogBreakdown.otherWallArt++;
-      else if (cat === 'pillow') catalogBreakdown.pillow++;
-      else catalogBreakdown.other++;
-      // Count vision-enriched records so the UI can surface enrichment
-      // status alongside catalog size in the results header.
-      if (Array.isArray(r.visionStyle) && r.visionStyle.length > 0) enrichedCount++;
-    }
-
-    // —— Product type filter (applied BEFORE tagging/scoring so the pool shrinks)
-    const totalBeforeFilter = allRecords.length;
-    if (productFilters) {
-      allRecords = allRecords.filter(r => passesProductFilters(r, productFilters));
-    } else {
-      // Default behavior when the client doesn't send filters: still exclude
-      // pillows so legacy clients keep their wall-art-only experience.
-      allRecords = allRecords.filter(r => productCategory(r.source_collection) !== 'pillow');
-    }
-    const totalAfterFilter = allRecords.length;
-    if (totalAfterFilter === 0) {
-      return NextResponse.json({
-        error: 'No catalog items match the selected product types. Try loosening the Product Types filter.',
-        catalogBreakdown,
-        catalogSize: totalBeforeFilter,
-      }, { status: 400 });
-    }
-
-    // Must have at least one signal: a brief, or find-similar seed URLs
-    const hasBriefText = !!(briefText || '').trim();
-    const hasSeeds = findSimilarUrls.length > 0;
-    if (!hasBriefText && !hasSeeds) {
-      return NextResponse.json({
-        error: 'Please provide either a Jotform brief or at least one Society6 product URL in Find Similar.',
-      }, { status: 400 });
-    }
-
-    // —— Stage 1: Parse brief ——————————————————————————————————————————————
-    let brief = null;
-    if (hasBriefText) {
-      if (hasAnthropicKey) {
-        try {
-          brief = await parseBriefWithClaude(briefText);
-          brief.parsedBy = 'claude';
-          if (!brief.searchKeywords)
-            brief.searchKeywords = [...(brief.styleTags || []), ...(brief.paletteTags || [])];
-          if (!brief.subjectMustMatch)
-            brief.subjectMustMatch = (brief.styleTags || []).filter(s => SUBJECT_TAGS.includes(s));
-        } catch (e) {
-          console.warn('Claude brief parse failed, using fallback:', e.message);
-          brief = parseBriefFallback(briefText);
-          brief.parsedBy = 'regex-fallback';
-        }
-      } else {
-        brief = parseBriefFallback(briefText);
-        brief.parsedBy = 'regex';
-      }
-    }
-
-    // —— Find Similar: build (or merge in) a synthetic brief from seed URLs ——
-    if (hasSeeds) {
-      const synthBrief = await buildBriefFromSeeds(findSimilarUrls, allRecords, hasAnthropicKey);
-      if (brief) {
-        // Brief + seeds — combine signals
-        brief = mergeBriefs(brief, synthBrief);
-        brief.findSimilarSeeds = synthBrief.findSimilarSeeds;
-        brief.findSimilarUnmatched = synthBrief.findSimilarUnmatched;
-      } else {
-        // Seed-only mode — the synth brief IS the brief
-        brief = synthBrief;
-      }
-      // Auto-include the seed URLs as pinned so the originals surface in results
-      const seedPinSet = new Set(pinnedUrls || []);
-      for (const u of findSimilarUrls) seedPinSet.add(u);
-      pinnedUrls = Array.from(seedPinSet);
-    }
-
-    if (productFilters) {
-      console.log('[recommend] product filter applied:', JSON.stringify(productFilters),
-        `| catalog ${totalBeforeFilter} -> ${totalAfterFilter}`);
-    }
-
-    // —— Feedback-aware brief augmentation ————————————————————————————————
-    // When the user refines with something like "gritty cityscapes", we parse
-    // that feedback into add/avoid keywords and merge into the brief so the
-    // *scoring stage* shifts the candidate pool, not just the final prompt.
-    let feedbackHints = { addKeywords: [], avoidKeywords: [], subjectOverride: [], tone: '' };
-    if (refineFeedback && refineFeedback.trim() && hasAnthropicKey) {
+    // —— Stage 1 ——
+    let brief;
+    if (hasAnthropicKey) {
       try {
-        feedbackHints = await parseFeedbackWithClaude(refineFeedback);
-        console.log('[recommend] feedbackHints:', JSON.stringify(feedbackHints));
+        brief = await parseBriefWithClaude(briefText);
+        brief.parsedBy = 'claude';
       } catch (e) {
-        console.warn('Feedback parse failed:', e.message);
+        console.warn('Claude brief parse failed, using fallback:', e.message);
+        brief = parseBriefFallback(briefText);
+        brief.parsedBy = 'regex-fallback';
       }
-      // If the feedback names an explicit subject ('urban', 'landscape', etc.),
-      // REPLACE the original subjectMustMatch with it. This is the strongest
-      // lever we have — items with a non-matching concrete subject get a
-      // -15 penalty in scoring, which effectively removes them from the pool.
-      const newSubjects = (feedbackHints.subjectOverride || [])
-        .map(s => (s || '').toLowerCase().trim())
-        .filter(s => SUBJECT_TAGS.includes(s));
-      brief = {
-        ...brief,
-        searchKeywords: Array.from(new Set([...(brief.searchKeywords || []), ...feedbackHints.addKeywords])),
-        avoidTags: Array.from(new Set([...(brief.avoidTags || []), ...feedbackHints.avoidKeywords])),
-        subjectMustMatch: newSubjects.length > 0 ? newSubjects : (brief.subjectMustMatch || []),
-      };
+    } else {
+      brief = parseBriefFallback(briefText);
+      brief.parsedBy = 'regex';
     }
 
-    // —— Score the ENTIRE catalog ——————————————————————————————————————————
-    // Tag every record, score every record — no sampling, no random cutoffs.
-    // This ensures no good match gets missed regardless of catalog size.
-    const tagged = allRecords.map(tagRecord);
-    const scored = tagged
-      .map(r => ({ ...r, _score: scoreRecord(r, brief) }))
-      .filter(r => r._score > -3)  // only cut truly avoided items
-      .sort((a, b) => b._score - a._score);
+    // —— Stage 2 ——
+    const candidates = (await scorePool(brief)).map(toCard);
+    const totalScored = candidates.length;
 
-    // —— Deduplicate by artwork family —————————————————————————————————————
-    // Also filter out items previously shown to the client during refinement,
-    // so Claude sees a fresh candidate pool and can actually pick different art.
-    const prevTitleSet = new Set(
-      (prevItemTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean)
-    );
-    // Collapse format variants: the same artwork appears as "Art Print",
-    // "Framed Art Print", "Canvas Print", etc. Strip those suffixes from the
-    // title to make a single family key, then also dedupe on the handle stem.
-    const familyKey = (r) => {
-      const t = (r.title || '')
-        .toLowerCase()
-        .replace(/\s*(framed\s+art\s+print|canvas\s+print|wood\s+wall\s+art|art\s+print|mini\s+art\s+print|metal\s+print|acrylic\s+block|wall\s+tapestry|poster|mural)\s*$/i, '')
-        .replace(/[\s\W_]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .trim();
-      const h = (r.product_handle || '')
-        .replace(/-(framed|canvas|wood|metal|acrylic|mini|poster|tapestry|mural)(-.*)?$/i, '')
-        .replace(/-\d+$/, '');
-      return t || h;
-    };
-
-    const seen = new Set();
-    const candidates = [];
-    for (const r of scored) {
-      const key = familyKey(r);
-      if (seen.has(key)) continue;
-      if (prevTitleSet.size > 0 && prevTitleSet.has((r.title || '').toLowerCase().trim())) continue;
-      seen.add(key);
-      candidates.push(normalizeUrl(r));
-      if (candidates.length >= 200) break;  // top 200 unique for Claude
+    if (candidates.length === 0) {
+      return NextResponse.json({
+        brief, primary: [], accent: [], galleryWallSets: [],
+        totalScored: 0, catalogSize: 64281, filteredSize: 64281,
+        aiPowered: hasAnthropicKey,
+        note: 'No designs scored above zero for this brief. Try loosening color or subject constraints.',
+      });
     }
 
-    // —— Stage 2: Claude selects the actual artworks ———————————————————————
+    // —— Stage 3 ——
     let primary = [];
     let accent = [];
-
-    if (hasAnthropicKey && candidates.length > 0) {
+    if (hasAnthropicKey) {
       try {
-        const primarySelections = await selectWithClaude(
-          candidates, brief, prevItemTitles, refineFeedback
-        );
-        const primaryHandles = new Map(
-          primarySelections.map(s => [s.handle, s.reason])
-        );
-
-        primary = candidates
-          .filter(c => primaryHandles.has(c.product_handle))
-          .map(c => ({ ...c, reason: primaryHandles.get(c.product_handle) }));
-
-        // If Claude returned fewer than expected, fill with top-scored candidates
-        if (primary.length < 15) {
-          const usedHandles = new Set(primary.map(r => r.product_handle));
-          const fill = candidates
-            .filter(r => !usedHandles.has(r.product_handle))
-            .slice(0, 20 - primary.length);
-          primary.push(...fill);
-        }
-
-        // Accent: top remaining scored candidates not in primary
-        const primarySet = new Set(primary.map(r => r.product_handle));
-        accent = candidates
-          .filter(r => !primarySet.has(r.product_handle))
-          .slice(0, 15);
+        const picks = await selectWithClaude(candidates, brief);
+        primary = applyFinalCap(picks, candidates);
+        const primarySet = new Set(primary.map(r => r.s6_product_id));
+        accent = candidates.filter(r => !primarySet.has(r.s6_product_id)).slice(0, 15);
       } catch (e) {
-        console.warn('Claude selection failed, using keyword results:', e.message);
-        primary = candidates.slice(0, 20);
-        accent = candidates.slice(20, 35);
+        console.warn('Claude selection failed, using weighted order:', e.message);
+        primary = candidates.slice(0, FINAL_N);
+        accent = candidates.slice(FINAL_N, FINAL_N + 15);
       }
     } else {
-      // No API key: use keyword-scored candidates directly
-      primary = candidates.slice(0, 20);
-      accent = candidates.slice(20, 35);
+      primary = candidates.slice(0, FINAL_N);
+      accent = candidates.slice(FINAL_N, FINAL_N + 15);
     }
 
-    // —— Pinned items (force-include specific Society6 URLs) ———————————————
-    const pinnedRecords = [];
-    if (pinnedUrls.length > 0) {
+    // —— Pinned items (force-include by s6_product_id or matching product_url) ——
+    if (Array.isArray(pinnedUrls) && pinnedUrls.length > 0) {
+      const pinnedRows = [];
       for (const url of pinnedUrls) {
-        const handle = url.split('/products/')[1]?.split('?')[0]?.split('/')[0];
-        if (!handle) continue;
-        const found = allRecords.find(r =>
-          r.product_handle === handle || (r.product_url || '').includes(handle)
-        );
-        if (found) pinnedRecords.push({ ...normalizeUrl(tagRecord(found)), pinned: true });
+        const hit = candidates.find(c => c.product_url === url || (c.product_url || '').includes(url));
+        if (hit) pinnedRows.push({ ...hit, pinned: true });
+      }
+      if (pinnedRows.length > 0) {
+        const pinnedSet = new Set(pinnedRows.map(r => r.s6_product_id));
+        primary = [...pinnedRows, ...primary.filter(r => !pinnedSet.has(r.s6_product_id))];
       }
     }
 
-    if (pinnedRecords.length > 0) {
-      const pinnedSet = new Set(pinnedRecords.map(r => r.product_url));
-      primary = [...pinnedRecords, ...primary.filter(r => !pinnedSet.has(r.product_url))];
-    }
-
-    // —— Gallery wall sets —————————————————————————————————————————————————
+    // —— Gallery wall sets ——
     const galleryWallSets = brief.galleryWall ? [
-      {
-        setNumber: 1,
-        theme: (brief.keyThemes || [])[0] || 'curated',
-        items: primary.slice(0, 6)
-      },
-      {
-        setNumber: 2,
-        theme: (brief.keyThemes || [])[1] || 'accent',
-        items: primary.slice(6, 12)
-      },
+      { setNumber: 1, theme: (brief.keyThemes || [])[0] || 'curated', items: primary.slice(0, 6) },
+      { setNumber: 2, theme: (brief.keyThemes || [])[1] || 'accent',  items: primary.slice(6, 12) },
     ] : [];
 
     return NextResponse.json({
       brief,
-      primary: primary.slice(0, 20),
+      primary: primary.slice(0, FINAL_N),
       accent: accent.slice(0, 15),
       galleryWallSets,
-      totalScored: scored.length,
-      catalogSize: totalBeforeFilter,
-      filteredSize: totalAfterFilter,
-      catalogBreakdown,
-      enrichedCount,
+      totalScored,
+      catalogSize: 64281,
+      filteredSize: totalScored,
       aiPowered: hasAnthropicKey,
     });
   } catch (err) {
     console.error('Recommend error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Failed to generate recommendations' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err.message || 'Failed to generate recommendations' }, { status: 500 });
   }
 }

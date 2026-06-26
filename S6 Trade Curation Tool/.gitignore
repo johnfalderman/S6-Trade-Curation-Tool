@@ -21,3 +21,28 @@ data/catalog.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local catalog tooling & data artifacts (not for deploy)
+*.csv
+*.jsonl
+out.txt
+test-recommend.mjs
+inspect-catalog.mjs
+inspect-cols.mjs
+introspect.mjs
+curation_proof.mjs
+import-designs.mjs
+dump-copy.mjs
+fix-copy.mjs
+fix-titles.mjs
+qa-skim.mjs
+reset-for-rerun.mjs
+build-sample-email.mjs
+count_types.py
+stamp.py
+brief-concourse.txt
+qa_report.txt
+qa_flagged.csv
+s6_sample_for_review.txt
+lib/describe.js.bak
+.DS_Store
