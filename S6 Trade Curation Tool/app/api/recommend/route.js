@@ -31,6 +31,21 @@ const FINAL_N    = 20;
 const PARSE_MODEL  = 'claude-haiku-4-5-20251001';
 const SELECT_MODEL = 'claude-haiku-4-5-20251001';
 
+// Society6 product URL is society6.com/products/<design_key><format-suffix>.
+// The base format (62,883 of 64,281 designs) is Art Print -> _art-print.
+const FORMAT_SUFFIX = {
+  'Art Print': '_art-print',
+  'Canvas Print': '_canvas-print',
+  'Framed Art Print': '_framed-art-print',
+  'Framed Canvas Print': '_framed-canvas-print',
+  'Mini Art Print': '_mini-art-print',
+};
+function buildProductUrl(designKey, productType) {
+  if (!designKey) return '';
+  const suffix = FORMAT_SUFFIX[productType] || '_art-print';
+  return 'https://society6.com/products/' + designKey + suffix;
+}
+
 // ——— Connection pool (module-scoped so it's reused across warm invocations) —
 let _pool = null;
 function getPool() {
@@ -42,16 +57,12 @@ function getPool() {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000,
     });
-    // Don't let a pooled-connection socket death crash the function.
     _pool.on('error', (err) => console.warn('[pg pool] idle client error:', err.message));
   }
   return _pool;
 }
 
 // ——— Color families for hard-avoid expansion ————————————————————————————————
-// A banned base color expands to its whole family, matched by substring against
-// the design's palette tags. tan/sand/beige/taupe are deliberately excluded
-// from the brown family (coastal-adjacent); only banned if named explicitly.
 const COLOR_FAMILIES = {
   orange: ['orange', 'terracotta', 'burnt orange', 'coral orange', 'amber', 'rust', 'tangerine', 'apricot'],
   brown:  ['brown', 'warm brown', 'rust-brown', 'pale brown', 'chocolate', 'mahogany', 'sienna', 'umber', 'coffee'],
@@ -199,7 +210,7 @@ async function scorePool(brief) {
   WITH base AS (
     SELECT
       p.id, p.s6_product_id, p.title, p.artist_name, p.artist_handle,
-      p.product_type, p.image_url, p.product_url,
+      p.product_type, p.image_url, p.product_url, p.design_key,
       e.vision_subject, e.vision_style, e.vision_palette, e.vision_mood,
       lower(concat_ws(' ', e.vision_summary, e.vision_subject, e.vision_style,
         e.vision_palette, e.vision_mood, e.vision_keywords, e.artwork_description)) AS blob,
@@ -239,7 +250,7 @@ async function scorePool(brief) {
     WHERE score > 0
   )
   SELECT
-    s6_product_id, title, artist_name, artist_handle, product_type,
+    s6_product_id, title, artist_name, artist_handle, product_type, design_key,
     image_url, product_url, vision_subject, vision_style, vision_palette, vision_mood, score
   FROM ranked
   WHERE artist_rn <= $7
@@ -311,15 +322,15 @@ function applyFinalCap(picks, poolRows) {
   return chosen;
 }
 
-// Pass-through normalizer — image_url and product_url are already full
-// cdn.shopify.com / society6 URLs in the new catalog. Map to the shape the
-// front end expects (it reads product_handle/source_collection historically;
-// we alias them so page.jsx keeps working unchanged).
+// Map a scored row to the card shape the front end expects. Builds the real
+// society6.com product URL from design_key + format suffix (the catalog's
+// product_url column is empty across all rows, so we construct it here).
 function toCard(r) {
   return {
     ...r,
-    product_handle: r.s6_product_id,         // stable id alias
-    source_collection: r.product_type || '', // legacy field name the UI reads
+    product_handle: r.s6_product_id,
+    source_collection: r.product_type || '',
+    product_url: buildProductUrl(r.design_key, r.product_type),
   };
 }
 
@@ -409,7 +420,7 @@ export async function POST(request) {
       accent = candidates.slice(FINAL_N, FINAL_N + 15);
     }
 
-    // —— Pinned items (force-include by s6_product_id or matching product_url) ——
+    // —— Pinned items ——
     if (Array.isArray(pinnedUrls) && pinnedUrls.length > 0) {
       const pinnedRows = [];
       for (const url of pinnedUrls) {
