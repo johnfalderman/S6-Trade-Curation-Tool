@@ -19,6 +19,7 @@ import pg from 'pg';
 
 const W_STYLE = 3, W_PALETTE = 2, W_MOOD = 1, W_KEYWORD = 4, W_SUBJECT = 8, W_AVOID_SOFT = 8;
 const POOL_CAP = 3, POOL_LIMIT = 200, FINAL_CAP = 2, FINAL_N = 20;
+const SEED_CAP = 7;  // max Find-Similar seed URLs
 const PARSE_MODEL = 'claude-haiku-4-5-20251001';
 const SELECT_MODEL = 'claude-haiku-4-5-20251001';
 
@@ -428,12 +429,78 @@ function toCard(r) {
   };
 }
 
+
+// ——— Find Similar: build a synthetic brief from seed product URLs ———————————
+// Resolve each URL to a design_key, fetch those designs' OWN vision tags, and
+// aggregate them (by frequency) into a brief the normal scorer can consume.
+// No scraping — the seeds' tags are already in the catalog.
+async function buildBriefFromSeeds(seedUrls) {
+  const keys = Array.from(new Set(
+    (seedUrls || []).slice(0, SEED_CAP).map(designKeyFromUrl).filter(Boolean)
+  ));
+  if (keys.length === 0) return { brief: null, seeds: [], unmatched: (seedUrls || []).length };
+
+  const seeds = await fetchByDesignKeys(keys);
+  const foundKeys = new Set(seeds.map(s => s.design_key));
+  const unmatched = keys.filter(k => !foundKeys.has(k)).length;
+  if (seeds.length === 0) return { brief: null, seeds: [], unmatched };
+
+  // Split a comma-tag field into an array.
+  const tags = (v) => (v || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  // Aggregate tag frequency across seeds, return most-common-first.
+  const agg = (field) => {
+    const counts = {};
+    for (const s of seeds) for (const t of tags(s[field])) counts[t] = (counts[t] || 0) + 1;
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  };
+
+  const styleTags = agg('vision_style').slice(0, 8);
+  const paletteTags = agg('vision_palette').slice(0, 8);
+  const moodTags = agg('vision_mood').slice(0, 6);
+  // vision_subject is one compact phrase per seed — collect distinct words as subject tokens.
+  const subjectWords = {};
+  for (const s of seeds) for (const w of (s.vision_subject || '').toLowerCase().split(/[^a-z]+/).filter(x => x.length >= 4)) {
+    subjectWords[w] = (subjectWords[w] || 0) + 1;
+  }
+  const subjectTokens = Object.entries(subjectWords).sort((a, b) => b[1] - a[1]).map(([w]) => w).slice(0, 6);
+
+  const brief = {
+    projectName: 'Find Similar',
+    clientName: '', location: '', projectType: 'other',
+    briefSummary: `Artwork with a similar aesthetic to ${seeds.length} selected piece(s).`,
+    styleTags, paletteTags, moodTags, subjectTokens,
+    keywords: Array.from(new Set([...styleTags, ...paletteTags, ...subjectTokens])).slice(0, 20),
+    avoidHard: [], avoidSoft: [],
+    galleryWall: false, keyThemes: styleTags.slice(0, 3),
+    parsedBy: 'find-similar',
+  };
+  return { brief, seeds, unmatched };
+}
+
+// Merge a text brief with a seed-derived brief (union of tag lists; text brief's
+// scalar fields and avoid lists win).
+function mergeBriefs(primary, seed) {
+  if (!primary) return seed;
+  if (!seed) return primary;
+  const u = (a, b) => Array.from(new Set([...(a || []), ...(b || [])]));
+  return {
+    ...primary,
+    styleTags: u(primary.styleTags, seed.styleTags),
+    paletteTags: u(primary.paletteTags, seed.paletteTags),
+    moodTags: u(primary.moodTags, seed.moodTags),
+    subjectTokens: u(primary.subjectTokens, seed.subjectTokens),
+    keywords: u(primary.keywords, seed.keywords),
+    parsedBy: (primary.parsedBy || 'claude') + '+seeds',
+  };
+}
+
 // ——— Route handler ——————————————————————————————————————————————————————————
 export async function POST(request) {
   try {
     let briefText = '', moodboardUrl = '', moodboardFile = null;
     let pinnedUrls = [], excludeMini = true;
     let refineFeedback = '', prevItemTitles = [];
+    let findSimilarUrls = [];
 
     const contentType = request.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
@@ -444,6 +511,7 @@ export async function POST(request) {
       try { pinnedUrls = JSON.parse(fd.get('pinnedUrls') || '[]'); } catch {}
       refineFeedback = fd.get('refineFeedback') || '';
       try { prevItemTitles = JSON.parse(fd.get('prevItemTitles') || '[]'); } catch {}
+      try { findSimilarUrls = JSON.parse(fd.get('findSimilarUrls') || '[]'); } catch {}
       const em = fd.get('excludeMini');
       if (em !== null && em !== undefined && em !== '') excludeMini = (em === 'true' || em === true);
     } else {
@@ -453,14 +521,21 @@ export async function POST(request) {
       pinnedUrls = body.pinnedUrls || [];
       refineFeedback = body.refineFeedback || '';
       prevItemTitles = body.prevItemTitles || [];
+      findSimilarUrls = body.findSimilarUrls || [];
       if (typeof body.excludeMini === 'boolean') excludeMini = body.excludeMini;
     }
+
+    // Normalize findSimilarUrls: accept array or newline string
+    if (typeof findSimilarUrls === 'string') findSimilarUrls = findSimilarUrls.split('\n');
+    findSimilarUrls = (Array.isArray(findSimilarUrls) ? findSimilarUrls : []).map(u => (u || '').trim()).filter(Boolean);
 
     if (!process.env.DATABASE_URL) {
       return NextResponse.json({ error: 'Catalog database not configured (DATABASE_URL missing).' }, { status: 500 });
     }
-    if (!(briefText || '').trim()) {
-      return NextResponse.json({ error: 'Please provide a curation brief.' }, { status: 400 });
+    const hasBriefText = !!(briefText || '').trim();
+    const hasSeeds = findSimilarUrls.length > 0;
+    if (!hasBriefText && !hasSeeds) {
+      return NextResponse.json({ error: 'Please provide a brief or at least one Society6 product URL to find similar art.' }, { status: 400 });
     }
 
     // —— Moodboard extraction (best-effort) folded into the brief ——
@@ -476,12 +551,26 @@ export async function POST(request) {
 
     const hasKey = !!process.env.ANTHROPIC_API_KEY;
 
-    // —— Parse ——
-    let brief;
-    if (hasKey) {
-      try { brief = await parseBriefWithClaude(briefText); brief.parsedBy = 'claude'; }
-      catch (e) { console.warn('parse failed, fallback:', e.message); brief = parseBriefFallback(briefText); brief.parsedBy = 'regex-fallback'; }
-    } else { brief = parseBriefFallback(briefText); brief.parsedBy = 'regex'; }
+    // —— Parse brief text (if any) ——
+    let brief = null;
+    if (hasBriefText) {
+      if (hasKey) {
+        try { brief = await parseBriefWithClaude(briefText); brief.parsedBy = 'claude'; }
+        catch (e) { console.warn('parse failed, fallback:', e.message); brief = parseBriefFallback(briefText); brief.parsedBy = 'regex-fallback'; }
+      } else { brief = parseBriefFallback(briefText); brief.parsedBy = 'regex'; }
+    }
+
+    // —— Find Similar: build a seed brief and merge (or use alone) ——
+    let seedResult = { brief: null, seeds: [], unmatched: 0 };
+    if (hasSeeds) {
+      seedResult = await buildBriefFromSeeds(findSimilarUrls);
+      if (seedResult.brief) {
+        brief = brief ? mergeBriefs(brief, seedResult.brief) : seedResult.brief;
+      }
+    }
+    if (!brief) {
+      return NextResponse.json({ error: 'Could not build a curation from the provided input. Check the brief or the product URLs.' }, { status: 400 });
+    }
 
     // —— Refine: interpret feedback into hints and merge into the brief ——
     let feedbackHints = null;
@@ -523,10 +612,12 @@ export async function POST(request) {
       accent = candidates.slice(FINAL_N, FINAL_N + 15);
     }
 
-    // —— Pinned items (resolve via design_key, force-include at top) ——
+    // —— Pin seeds + explicit pins (resolve via design_key, force-include at top) ——
+    // Find-Similar seeds are pinned so the pasted pieces surface in results.
+    const allPinUrls = Array.from(new Set([...(pinnedUrls || []), ...findSimilarUrls]));
     let pinnedUnmatched = 0;
-    if (Array.isArray(pinnedUrls) && pinnedUrls.length > 0) {
-      const keys = Array.from(new Set(pinnedUrls.map(designKeyFromUrl).filter(Boolean)));
+    if (allPinUrls.length > 0) {
+      const keys = Array.from(new Set(allPinUrls.map(designKeyFromUrl).filter(Boolean)));
       if (keys.length > 0) {
         const rows = (await fetchByDesignKeys(keys)).map(toCard);
         const foundKeys = new Set(rows.map(r => r.design_key));
@@ -546,11 +637,12 @@ export async function POST(request) {
 
     return NextResponse.json({
       brief,
-      primary: primary.slice(0, FINAL_N + (Array.isArray(pinnedUrls) ? pinnedUrls.length : 0)),
+      primary: primary.slice(0, FINAL_N + allPinUrls.length),
       accent: accent.slice(0, 15),
       galleryWallSets,
       totalScored, catalogSize: 64281, filteredSize: totalScored,
       moodboard, pinnedUnmatched, excludeMini,
+      findSimilar: { seedCount: seedResult.seeds.length, unmatched: seedResult.unmatched },
       feedbackApplied: feedbackHints ? refineFeedback : null,
       aiPowered: hasKey,
     });

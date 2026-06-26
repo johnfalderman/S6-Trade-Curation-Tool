@@ -170,6 +170,7 @@ export default function HomePage() {
   // Pinned items (paste-by-URL)
   const [pinnedUrlInput, setPinnedUrlInput] = useState('')
   const [pinnedUrls, setPinnedUrls] = useState([])
+  const [findSimilarText, setFindSimilarText] = useState('')
 
   // Exclude Mini Art Prints from recommendations (on by default).
   const [excludeMini, setExcludeMini] = useState(true)
@@ -213,7 +214,7 @@ export default function HomePage() {
   const [deckTargetPieces, setDeckTargetPieces] = useState('')
   const [deckNotes, setDeckNotes] = useState('')
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
@@ -223,13 +224,14 @@ export default function HomePage() {
       if (refineFeedback) fd.append('refineFeedback', refineFeedback)
       if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
       if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
+      if (findSimilarUrls?.length) fd.append('findSimilarUrls', JSON.stringify(findSimilarUrls))
       fd.append('excludeMini', String(excludeMini))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls }),
       })
     }
     const data = await res.json()
@@ -246,7 +248,8 @@ export default function HomePage() {
     setSlidesError(null)
     setRefineHistory([])
     try {
-      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, excludeMini })
+      const findSimilarUrls = findSimilarText.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 7)
+      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, excludeMini, findSimilarUrls })
       setResults(data)
       if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
       if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
@@ -283,9 +286,10 @@ export default function HomePage() {
       const mergedPinnedUrls = Array.from(new Set([...(pinnedUrls || []), ...pinnedFromCards]))
       const prevItemTitles = currentItems.filter(i => !isPinned(i)).map(i => i.title).filter(Boolean)
 
+      const findSimilarUrls = findSimilarText.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 7)
       const data = await callRecommend({
         brief: briefText, moodboardUrl, moodboardFile, refineFeedback,
-        prevItemTitles, pinnedUrls: mergedPinnedUrls, excludeMini,
+        prevItemTitles, pinnedUrls: mergedPinnedUrls, excludeMini, findSimilarUrls,
       })
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
@@ -559,6 +563,25 @@ export default function HomePage() {
             )}
           </div>
 
+          {/* Find Similar Art */}
+          <div className="border border-gray-200 rounded-lg p-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Find Similar Art <span className="text-gray-400 font-normal">(optional)</span></label>
+            <p className="text-xs text-gray-500 mb-2">Paste up to 7 Society6 product URLs (one per line). We'll find art with a similar look and feel. Works on its own, or alongside a brief to steer the results. The pasted pieces are pinned at the top so you can see the match.</p>
+            <textarea
+              value={findSimilarText}
+              onChange={e => setFindSimilarText(e.target.value)}
+              rows={3}
+              placeholder={'https://society6.com/products/...\nhttps://society6.com/products/...'}
+              className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-gray-400"
+            />
+            {findSimilarText.trim() && (
+              <p className="text-xs text-gray-500 mt-1.5">
+                {findSimilarText.split('\n').map(s => s.trim()).filter(Boolean).length} URL(s) entered
+                {findSimilarText.split('\n').map(s => s.trim()).filter(Boolean).length > 7 && <span className="text-amber-600"> — only the first 7 will be used</span>}
+              </p>
+            )}
+          </div>
+
           {/* Exclude Mini Art Prints */}
           <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
             <label className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer">
@@ -578,7 +601,7 @@ export default function HomePage() {
           )}
 
           <div className="flex items-center gap-3">
-            <button type="submit" disabled={loading || !briefText.trim()} className="btn-primary">
+            <button type="submit" disabled={loading || (!briefText.trim() && !findSimilarText.trim())} className="btn-primary">
               {loading ? 'Generating...' : 'Generate Recommendations'}
             </button>
             {results && (
