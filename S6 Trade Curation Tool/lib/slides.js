@@ -151,6 +151,7 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
   addLine('Rooms', joinTags(brief.rooms));
   if (brief.galleryWall) briefLines.push({ text: 'Gallery Wall: Yes', options: {} });
   addLine('Target Pieces', brief.targetPieceCount || brief.pieceCount);
+  addLine('Notes', brief.notes);
 
   const briefTextArr = briefLines.map(line => ({
     text: line.text + '\n',

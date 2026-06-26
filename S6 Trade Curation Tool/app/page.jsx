@@ -204,6 +204,14 @@ export default function HomePage() {
   const [deckProjectName, setDeckProjectName] = useState('')
   const [deckLocation, setDeckLocation] = useState('')
   const [deckDate, setDeckDate] = useState(() => new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }))
+  const [deckType, setDeckType] = useState('')
+  const [deckStyle, setDeckStyle] = useState('')
+  const [deckPalette, setDeckPalette] = useState('')
+  const [deckAvoid, setDeckAvoid] = useState('')
+  const [deckRooms, setDeckRooms] = useState('')
+  const [deckGalleryWall, setDeckGalleryWall] = useState(false)
+  const [deckTargetPieces, setDeckTargetPieces] = useState('')
+  const [deckNotes, setDeckNotes] = useState('')
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }) {
     let res
@@ -243,6 +251,16 @@ export default function HomePage() {
       if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
       if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
       if (data.brief?.location) setDeckLocation(data.brief.location)
+      const b = data.brief || {}
+      const joinL = (a) => Array.isArray(a) ? a.filter(Boolean).join(', ') : (a || '')
+      if (b.clientName) setDeckClientName(b.clientName)
+      setDeckType(b.projectType || '')
+      setDeckStyle(joinL(b.styleTags))
+      setDeckPalette(joinL(b.paletteTags))
+      setDeckAvoid([joinL(b.avoidHard), joinL(b.avoidSoft)].filter(Boolean).join(', '))
+      setDeckRooms(joinL(b.rooms))
+      setDeckGalleryWall(!!b.galleryWall)
+      setDeckTargetPieces(b.targetPieceCount || b.pieceCount || '')
       initSelectedItems(data)
       setActiveTab('primary')
       setTimeout(() => document.getElementById('results-section')?.scrollIntoView({ behavior: 'smooth' }), 100)
@@ -374,6 +392,15 @@ export default function HomePage() {
             ...(deckProjectName && { projectName: deckProjectName }),
             ...(deckLocation && { location: deckLocation }),
             ...(deckDate && { date: deckDate }),
+            projectType: deckType,
+            styleTags: deckStyle ? deckStyle.split(',').map(s => s.trim()).filter(Boolean) : [],
+            paletteTags: deckPalette ? deckPalette.split(',').map(s => s.trim()).filter(Boolean) : [],
+            avoidHard: deckAvoid ? deckAvoid.split(',').map(s => s.trim()).filter(Boolean) : [],
+            avoidSoft: [],
+            rooms: deckRooms ? deckRooms.split(',').map(s => s.trim()).filter(Boolean) : [],
+            galleryWall: deckGalleryWall,
+            targetPieceCount: deckTargetPieces || null,
+            notes: deckNotes || '',
           },
           primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
           accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
@@ -753,6 +780,48 @@ export default function HomePage() {
                   <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
                   <input type="text" value={deckDate} onChange={e => setDeckDate(e.target.value)} placeholder="e.g. April 2026" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
                 </div>
+              </div>
+            </div>
+
+            <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Project Brief Slide</p>
+              <p className="text-xs text-gray-400 mb-3">Pre-filled from the brief. Edit freely — any field left blank is omitted from the slide.</p>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Type</label>
+                  <input type="text" value={deckType} onChange={e => setDeckType(e.target.value)} placeholder="e.g. hotel" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Target Pieces</label>
+                  <input type="text" value={deckTargetPieces} onChange={e => setDeckTargetPieces(e.target.value)} placeholder="e.g. 80" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+                </div>
+              </div>
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Style <span className="text-gray-400 font-normal">(comma-separated)</span></label>
+                <input type="text" value={deckStyle} onChange={e => setDeckStyle(e.target.value)} placeholder="e.g. minimalist, line art, watercolor" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+              </div>
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Palette <span className="text-gray-400 font-normal">(comma-separated)</span></label>
+                <input type="text" value={deckPalette} onChange={e => setDeckPalette(e.target.value)} placeholder="e.g. blue, sage green, cream" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+              </div>
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Avoid <span className="text-gray-400 font-normal">(comma-separated)</span></label>
+                <input type="text" value={deckAvoid} onChange={e => setDeckAvoid(e.target.value)} placeholder="e.g. brown, orange, western" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+              </div>
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Rooms <span className="text-gray-400 font-normal">(comma-separated)</span></label>
+                <input type="text" value={deckRooms} onChange={e => setDeckRooms(e.target.value)} placeholder="e.g. lobby, guest rooms, restaurant" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
+              </div>
+              <div className="mb-3">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="checkbox" checked={deckGalleryWall} onChange={e => setDeckGalleryWall(e.target.checked)} className="accent-gray-900 w-4 h-4" />
+                  <span className="font-medium">Gallery Wall</span>
+                  <span className="text-xs text-gray-400 font-normal">(shown on the slide only when checked)</span>
+                </label>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Notes <span className="text-gray-400 font-normal">(free text — appears on the brief slide; omitted if blank)</span></label>
+                <textarea value={deckNotes} onChange={e => setDeckNotes(e.target.value)} rows={3} placeholder="Any extra context for the brief slide…" className="w-full border border-gray-300 rounded-lg p-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-gray-400" />
               </div>
             </div>
 
