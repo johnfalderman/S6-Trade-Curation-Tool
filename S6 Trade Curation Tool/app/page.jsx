@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 const SAMPLE_BRIEF = `Project Name: The Savannah Grand Hotel
 Project Type: Hotel
@@ -115,6 +115,37 @@ function BriefBadge({ label, values, danger = false }) {
   )
 }
 
+// Full-screen overlay shown during generate/refine. The stage messages are
+// cosmetic (advanced on a timer, not real server progress); the last one is
+// terminal so it never falsely claims completion.
+function LoadingOverlay({ active, mode }) {
+  const stages = mode === 'refine'
+    ? ['Reading your feedback…', 'Re-scoring the catalog…', 'Curating new pieces…']
+    : ['Reading the brief…', 'Scoring 64,000 designs…', 'Curating the final set…']
+  const [stage, setStage] = useState(0)
+  useEffect(() => {
+    if (!active) { setStage(0); return }
+    setStage(0)
+    const id = setInterval(() => setStage(s => Math.min(s + 1, stages.length - 1)), 2500)
+    return () => clearInterval(id)
+  }, [active, mode])
+  if (!active) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-xl px-8 py-7 flex flex-col items-center gap-4 max-w-xs mx-4">
+        <svg className="animate-spin h-8 w-8 text-gray-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <div className="text-sm font-medium text-gray-800 text-center">
+          {mode === 'refine' ? 'Refining your recommendations' : 'Curating your set'}
+        </div>
+        <div className="text-xs text-gray-500 text-center min-h-[1rem]">{stages[stage]}</div>
+      </div>
+    </div>
+  )
+}
+
 export default function HomePage() {
   const [briefText, setBriefText] = useState('')
   const [moodboardUrl, setMoodboardUrl] = useState('')
@@ -172,7 +203,7 @@ export default function HomePage() {
   const [deckClientName, setDeckClientName] = useState('')
   const [deckProjectName, setDeckProjectName] = useState('')
   const [deckLocation, setDeckLocation] = useState('')
-  const [deckDate, setDeckDate] = useState('')
+  const [deckDate, setDeckDate] = useState(() => new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }))
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini }) {
     let res
@@ -406,6 +437,7 @@ export default function HomePage() {
 
   return (
     <div className="max-w-4xl mx-auto">
+      <LoadingOverlay active={loading || refineLoading} mode={refineLoading ? 'refine' : 'generate'} />
 
       {/* -- Intake Form -- */}
       <div className="mb-10">

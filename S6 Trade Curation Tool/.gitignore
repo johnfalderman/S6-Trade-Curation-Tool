@@ -46,3 +46,4 @@ qa_flagged.csv
 s6_sample_for_review.txt
 lib/describe.js.bak
 .DS_Store
+*.zip

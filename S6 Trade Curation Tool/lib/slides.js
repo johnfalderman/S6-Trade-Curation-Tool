@@ -129,18 +129,28 @@ export async function createSlidesDeck(brief, { primary = [], accent = [], galle
     fontSize: 26, bold: true, color: DARK_TEXT, fontFace: 'Arial',
   });
 
-  const briefLines = [
-    { text: 'Client: ' + (brief.clientName || '\u2014'), options: { bold: true } },
-    { text: 'Project: ' + (brief.projectName || '\u2014'), options: {} },
-    { text: 'Location: ' + (brief.location || '\u2014'), options: {} },
-    { text: 'Type: ' + (brief.projectType || '\u2014'), options: {} },
-    { text: 'Style: ' + ((brief.styleTags || []).join(', ') || '\u2014'), options: {} },
-    { text: 'Palette: ' + ((brief.paletteTags || []).join(', ') || '\u2014'), options: {} },
-    { text: 'Avoid: ' + ((brief.avoidTags || []).join(', ') || '\u2014'), options: { color: 'AA3333' } },
-    { text: 'Rooms: ' + ((brief.rooms || []).join(', ') || '\u2014'), options: {} },
-    { text: 'Gallery Wall: ' + (brief.galleryWall ? 'Yes' : 'No'), options: {} },
-    { text: 'Target Pieces: ' + (brief.targetPieceCount || brief.pieceCount || '\u2014'), options: {} },
-  ];
+  // Build brief lines conditionally: only include a field when it has a real
+  // value, so empty fields don't print as a label with an em-dash on the deck.
+  const briefLines = [];
+  const addLine = (label, value, options = {}) => {
+    const v = (value == null ? '' : String(value)).trim();
+    if (v) briefLines.push({ text: label + ': ' + v, options });
+  };
+  const joinTags = (arr) => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : (arr || ''));
+  // Avoid: prefer the new avoidHard/avoidSoft fields; fall back to legacy avoidTags.
+  const avoidStr = [joinTags(brief.avoidHard), joinTags(brief.avoidSoft)].filter(Boolean).join(', ')
+    || joinTags(brief.avoidTags);
+
+  addLine('Client', brief.clientName, { bold: true });
+  addLine('Project', brief.projectName);
+  addLine('Location', brief.location);
+  addLine('Type', brief.projectType);
+  addLine('Style', joinTags(brief.styleTags));
+  addLine('Palette', joinTags(brief.paletteTags));
+  addLine('Avoid', avoidStr, { color: 'AA3333' });
+  addLine('Rooms', joinTags(brief.rooms));
+  if (brief.galleryWall) briefLines.push({ text: 'Gallery Wall: Yes', options: {} });
+  addLine('Target Pieces', brief.targetPieceCount || brief.pieceCount);
 
   const briefTextArr = briefLines.map(line => ({
     text: line.text + '\n',
