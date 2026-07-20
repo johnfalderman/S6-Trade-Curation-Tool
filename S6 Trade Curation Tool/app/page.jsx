@@ -253,6 +253,18 @@ export default function HomePage() {
   // Native product_type values to filter the recommendation pool by.
   const selectedProductTypes = ALL_PRODUCT_TYPES.filter(t => selectedTypes.has(t.slug)).map(t => t.type)
 
+  // How many designs are available in each product type (for the counts shown
+  // next to each checkbox). Fetched once from design_formats on mount.
+  const [typeCounts, setTypeCounts] = useState({})
+  useEffect(() => {
+    let alive = true
+    fetch('/api/product-types')
+      .then(r => r.json())
+      .then(d => { if (alive) setTypeCounts(d.counts || {}) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
+
   function toggleType(slug) {
     setSelectedTypes(prev => {
       const next = new Set(prev)
@@ -706,7 +718,7 @@ export default function HomePage() {
                   {WALL_ART_TYPES.map(t => (
                     <label key={t.slug} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                       <input type="checkbox" checked={selectedTypes.has(t.slug)} onChange={() => toggleType(t.slug)} className="accent-gray-900 w-4 h-4" />
-                      {t.label}
+                      <span>{t.label}{typeCounts[t.type] != null && <span className="text-gray-400"> ({typeCounts[t.type].toLocaleString()})</span>}</span>
                     </label>
                   ))}
                 </div>
@@ -717,7 +729,7 @@ export default function HomePage() {
                   {PILLOW_TYPES.map(t => (
                     <label key={t.slug} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                       <input type="checkbox" checked={selectedTypes.has(t.slug)} onChange={() => toggleType(t.slug)} className="accent-gray-900 w-4 h-4" />
-                      {t.label}
+                      <span>{t.label}{typeCounts[t.type] != null && <span className="text-gray-400"> ({typeCounts[t.type].toLocaleString()})</span>}</span>
                     </label>
                   ))}
                 </div>
