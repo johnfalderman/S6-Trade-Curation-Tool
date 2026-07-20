@@ -11,7 +11,64 @@ Gallery Wall: Yes
 Target Pieces: 80
 Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm. Should feel elevated but approachable.`
 
-function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null }) {
+// ── Product types the collection can be offered in ──────────────────────────
+// Every design can be manufactured as any format on Society6, so "product type"
+// is a presentation/export choice, not a catalog filter. Slugs match stamp.py's
+// Jordan-approved TYPE_SLUGS; the S6 URL is /products/<design_key>_<slug>.
+const WALL_ART_TYPES = [
+  { label: 'Art Print',           slug: 'art-print' },
+  { label: 'Framed Art Print',    slug: 'framed-art-print' },
+  { label: 'Canvas Print',        slug: 'canvas-print' },
+  { label: 'Framed Canvas Print', slug: 'framed-canvas-print' },
+  { label: 'Metal Print',         slug: 'metal-print' },
+  { label: 'Poster',              slug: 'poster' },
+  { label: 'Framed Poster',       slug: 'framed-poster' },
+  { label: 'Mini Art Print',      slug: 'mini-art-print' },
+  { label: 'Wood Wall Art',       slug: 'wood-wall-art' },
+  { label: 'Wall Tapestry',       slug: 'wall-tapestry' },
+]
+const PILLOW_TYPES = [
+  { label: 'Throw Pillow',                slug: 'throw-pillow' },
+  { label: 'Rectangular (Lumbar) Pillow', slug: 'rectangular-pillow' },
+]
+const ALL_PRODUCT_TYPES = [...WALL_ART_TYPES, ...PILLOW_TYPES]
+const PRODUCT_TYPE_SLUGS = ALL_PRODUCT_TYPES.map(t => t.slug)
+// Default: all wall art EXCEPT Mini Art Print (small-format, rarely wanted for
+// statement walls); pillows off. Keeps the old "exclude mini" default behavior.
+const DEFAULT_TYPE_SLUGS = WALL_ART_TYPES.filter(t => t.slug !== 'mini-art-print').map(t => t.slug)
+
+// Known S6 format suffixes (longest-first) so we can strip one off a product URL
+// to recover the design_key when an item doesn't carry design_key directly.
+const S6_FORMAT_SLUGS = [
+  'framed-canvas-print', 'framed-art-print', 'mini-art-print', 'foil-art-print',
+  'rectangular-pillow', 'canvas-print', 'framed-poster', 'wall-tapestry',
+  'wood-wall-art', 'wall-hanging', 'metal-print', 'throw-pillow', 'collage-set',
+  'wall-mural', 'wallpaper', 'art-print', 'poster',
+].sort((a, b) => b.length - a.length)
+
+function designKeyForItem(item) {
+  if (item && item.design_key) return item.design_key
+  const u = (item && item.product_url) || ''
+  const m = u.match(/\/products\/([^?\/#]+)/)
+  if (!m) return null
+  let slug = m[1]
+  for (const s of S6_FORMAT_SLUGS) {
+    if (slug.endsWith('_' + s)) { slug = slug.slice(0, -(s.length + 1)); break }
+  }
+  return slug || null
+}
+
+// Build the {label, slug, url} links for an item across the selected types,
+// in ALL_PRODUCT_TYPES order (wall art first). selectedSlugs is a Set.
+function productLinksForItem(item, selectedSlugs) {
+  const key = designKeyForItem(item)
+  if (!key) return []
+  return ALL_PRODUCT_TYPES
+    .filter(t => selectedSlugs.has(t.slug))
+    .map(t => ({ label: t.label, slug: t.slug, url: `https://society6.com/products/${key}_${t.slug}` }))
+}
+
+function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null, productLinks = null }) {
   const [imgError, setImgError] = useState(false)
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
   return (
@@ -57,14 +114,31 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
         <div className="text-sm font-medium text-gray-800 leading-tight line-clamp-2">{item.title}</div>
         <div className="text-xs text-gray-400">{item.source_collection}</div>
         <div className="mt-auto pt-2">
-          <a
-            href={item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-red-600 hover:text-red-800 font-medium"
-          >
-            View on Society6 {'->'}
-          </a>
+          {productLinks && productLinks.length > 0 ? (
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+              {productLinks.map(pl => (
+                <a
+                  key={pl.slug}
+                  href={pl.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-red-600 hover:text-red-800 font-medium"
+                  title={`View ${pl.label} on Society6`}
+                >
+                  {pl.label}
+                </a>
+              ))}
+            </div>
+          ) : (
+            <a
+              href={item.product_url?.startsWith('/') ? 'https://society6.com' + item.product_url : item.product_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-red-600 hover:text-red-800 font-medium"
+            >
+              View on Society6 {'->'}
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -87,7 +161,7 @@ function CardControlsLegend() {
   )
 }
 
-function GalleryWallSet({ gwSet }) {
+function GalleryWallSet({ gwSet, selectedTypes = null }) {
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white">
       <div className="flex items-center gap-2 mb-3">
@@ -96,7 +170,12 @@ function GalleryWallSet({ gwSet }) {
       </div>
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
         {(gwSet.items || []).map(item => (
-          <ArtworkCard key={item.product_url} item={item} size="sm" />
+          <ArtworkCard
+            key={item.product_url}
+            item={item}
+            size="sm"
+            productLinks={selectedTypes ? productLinksForItem(item, selectedTypes) : null}
+          />
         ))}
       </div>
     </div>
@@ -172,8 +251,23 @@ export default function HomePage() {
   const [pinnedUrls, setPinnedUrls] = useState([])
   const [findSimilarText, setFindSimilarText] = useState('')
 
-  // Exclude Mini Art Prints from recommendations (on by default).
-  const [excludeMini, setExcludeMini] = useState(true)
+  // Product types the collection is offered in (wall art on, pillows off by
+  // default). Mini Art Print being unchecked also keeps it out of the pool,
+  // preserving the old "exclude mini" behavior.
+  const [selectedTypes, setSelectedTypes] = useState(() => new Set(DEFAULT_TYPE_SLUGS))
+  const excludeMini = !selectedTypes.has('mini-art-print')
+
+  function toggleType(slug) {
+    setSelectedTypes(prev => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+  const selectAllTypes = () => setSelectedTypes(new Set(PRODUCT_TYPE_SLUGS))
+  const selectWallArtOnly = () => setSelectedTypes(new Set(WALL_ART_TYPES.map(t => t.slug)))
+  const clearTypes = () => setSelectedTypes(new Set())
 
   // Item selection for deck
   const [selectedItems, setSelectedItems] = useState(new Set())
@@ -344,11 +438,9 @@ export default function HomePage() {
     const toAbsolute = (u) => !u ? '' : (u.startsWith('/') ? 'https://society6.com' + u : u)
     const rows = []
     const push = (item, placement) => {
-      const productUrl = toAbsolute(item.product_url)
       const imageUrl = toAbsolute(item.image_url)
-      rows.push({
+      const base = {
         title: item.title || '',
-        product_url: productUrl,
         image_url: imageUrl,
         thumbnail: imageUrl ? `=IMAGE("${imageUrl}")` : '',
         artist: item.artist_name || '',
@@ -356,7 +448,15 @@ export default function HomePage() {
         palette: item.vision_palette || '',
         placement,
         reason: item.reason || '',
-      })
+      }
+      // One row per selected product type; fall back to the item's own URL if
+      // no types are selected or the design_key can't be resolved.
+      const links = productLinksForItem(item, selectedTypes)
+      if (links.length === 0) {
+        rows.push({ ...base, product_type: '', product_url: toAbsolute(item.product_url) })
+      } else {
+        for (const l of links) rows.push({ ...base, product_type: l.label, product_url: l.url })
+      }
     }
     ;(results.primary || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Primary'))
     ;(results.accent || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Accent'))
@@ -364,7 +464,7 @@ export default function HomePage() {
       (set.items || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, `Gallery Wall #${set.setNumber}`))
     })
     if (rows.length === 0) { setSlidesError('Nothing selected to export. Select at least one item above.'); return }
-    const headers = ['title', 'product_url', 'image_url', 'thumbnail', 'artist', 'style', 'palette', 'placement', 'reason']
+    const headers = ['title', 'product_type', 'product_url', 'image_url', 'thumbnail', 'artist', 'style', 'palette', 'placement', 'reason']
     const escape = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
     const csv = [headers.join(','), ...rows.map(r => headers.map(h => escape(r[h])).join(','))].join('\n')
     const safeName = (deckProjectName || results.brief?.projectName || 'S6-Curation')
@@ -386,6 +486,13 @@ export default function HomePage() {
     setSlidesResult(null)
     setSlidesError(null)
     try {
+      // Deck stays one image per design; point each link at the first selected
+      // product type so it lands on a format the client actually wants.
+      const offeredTypes = ALL_PRODUCT_TYPES.filter(t => selectedTypes.has(t.slug)).map(t => t.label)
+      const withType = (item) => {
+        const links = productLinksForItem(item, selectedTypes)
+        return links.length ? { ...item, product_url: links[0].url, source_collection: links[0].label } : item
+      }
       const res = await fetch('/api/slides', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -405,11 +512,12 @@ export default function HomePage() {
             galleryWall: deckGalleryWall,
             targetPieceCount: deckTargetPieces || null,
             notes: deckNotes || '',
+            productTypes: offeredTypes,
           },
-          primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)),
-          accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)),
+          primary: (results.primary || []).filter(i => selectedItems.has(i.product_url)).map(withType),
+          accent: (results.accent || []).filter(i => selectedItems.has(i.product_url)).map(withType),
           galleryWallSets: (results.galleryWallSets || []).map(s => ({
-            ...s, items: (s.items || []).filter(i => selectedItems.has(i.product_url))
+            ...s, items: (s.items || []).filter(i => selectedItems.has(i.product_url)).map(withType)
           })).filter(s => s.items.length > 0),
           providerInfo: { name: providerName, email: providerEmail, phone: providerPhone },
           imagesPerSlide,
@@ -582,18 +690,44 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* Exclude Mini Art Prints */}
+          {/* Product types to include */}
           <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-            <label className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={excludeMini}
-                onChange={e => setExcludeMini(e.target.checked)}
-                className="accent-gray-900 w-4 h-4"
-              />
-              <span className="font-medium">Exclude Mini Art Prints</span>
-            </label>
-            <p className="text-xs text-gray-500 mt-1.5 ml-6.5">Mini Art Prints are small-format pieces, usually not what trade clients want for statement walls. On by default. Full per-format filtering (canvas, framed, etc.) is coming once the product-page data is built out.</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-sm font-medium text-gray-700">Product types to include</span>
+              <div className="flex gap-3 text-xs">
+                <button type="button" onClick={selectAllTypes} className="text-gray-500 hover:text-gray-800 underline">All</button>
+                <button type="button" onClick={selectWallArtOnly} className="text-gray-500 hover:text-gray-800 underline">Wall art only</button>
+                <button type="button" onClick={clearTypes} className="text-gray-500 hover:text-gray-800 underline">None</button>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">Each recommended design is offered in the types you check. Wall art is on by default; add pillows for clients who want them. (Mini Art Prints are excluded from results unless checked.)</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Wall Art</div>
+                <div className="flex flex-col gap-1.5">
+                  {WALL_ART_TYPES.map(t => (
+                    <label key={t.slug} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                      <input type="checkbox" checked={selectedTypes.has(t.slug)} onChange={() => toggleType(t.slug)} className="accent-gray-900 w-4 h-4" />
+                      {t.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Pillows</div>
+                <div className="flex flex-col gap-1.5">
+                  {PILLOW_TYPES.map(t => (
+                    <label key={t.slug} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                      <input type="checkbox" checked={selectedTypes.has(t.slug)} onChange={() => toggleType(t.slug)} className="accent-gray-900 w-4 h-4" />
+                      {t.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {selectedTypes.size === 0 && (
+              <p className="text-xs text-amber-600 mt-3">Select at least one product type, or results won't have any product links.</p>
+            )}
           </div>
 
           {error && (
@@ -707,7 +841,7 @@ export default function HomePage() {
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.primary.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} productLinks={productLinksForItem(item, selectedTypes)} />
                   ))}
                 </div>
               </div>
@@ -728,7 +862,7 @@ export default function HomePage() {
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {results.accent.map(item => (
-                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} />
+                    <ArtworkCard key={item.product_url} item={item} pinned={isPinned(item)} selected={selectedItems.has(item.product_url)} onToggle={toggleItem} onPinToggle={togglePin} productLinks={productLinksForItem(item, selectedTypes)} />
                   ))}
                 </div>
               </div>
@@ -739,7 +873,7 @@ export default function HomePage() {
                 <p className="text-sm text-gray-500 mb-4">Curated gallery wall sets.</p>
                 <div className="space-y-6">
                   {results.galleryWallSets.map(gwSet => (
-                    <GalleryWallSet key={gwSet.setNumber} gwSet={gwSet} />
+                    <GalleryWallSet key={gwSet.setNumber} gwSet={gwSet} selectedTypes={selectedTypes} />
                   ))}
                 </div>
               </div>
