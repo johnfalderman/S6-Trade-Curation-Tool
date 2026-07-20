@@ -55,17 +55,21 @@ function productLinksForItem(item) {
     return [...fmts]
       .sort((a, b) => (TYPE_ORDER.get(a.type) ?? 99) - (TYPE_ORDER.get(b.type) ?? 99))
       .filter(f => f && f.url)
-      .map(f => ({ label: f.type, slug: f.type, url: f.url }))
+      .map(f => ({ label: f.type, slug: f.type, url: f.url, image: f.image_url }))
   }
   let url = item.product_url || ''
   if (url.startsWith('/')) url = 'https://society6.com' + url
   if (!url) return []
-  return [{ label: item.product_type || item.source_collection || 'View on Society6', slug: 'native', url }]
+  return [{ label: item.product_type || item.source_collection || 'View on Society6', slug: 'native', url, image: item.image_url }]
 }
 
 function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null, productLinks = null }) {
   const [imgError, setImgError] = useState(false)
   const imgSize = size === 'sm' ? 'h-32' : 'h-48'
+  // Prefer the primary offered format's own image so the thumbnail matches the
+  // product being linked (e.g. show the shower-curtain image, not the design's
+  // native pillow image). Falls back to the design's image.
+  const thumb = (productLinks && productLinks[0] && productLinks[0].image) || item.image_url
   return (
     <div className={`card group flex flex-col relative ${pinned ? 'ring-2 ring-blue-400' : ''} ${onToggle && !selected ? 'opacity-40' : ''}`}>
       {/* PIN control (top-left): keep this piece through a Refine */}
@@ -91,9 +95,9 @@ function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onTog
         </button>
       )}
       <div className={`bg-gray-100 overflow-hidden ${imgSize} mt-7`}>
-        {item.image_url && !imgError ? (
+        {thumb && !imgError ? (
           <img
-            src={item.image_url.startsWith('/') ? 'https://society6.com' + item.image_url : item.image_url}
+            src={thumb.startsWith('/') ? 'https://society6.com' + thumb : thumb}
             alt={item.image_alt || item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             referrerPolicy="no-referrer"
@@ -449,25 +453,29 @@ export default function HomePage() {
     const toAbsolute = (u) => !u ? '' : (u.startsWith('/') ? 'https://society6.com' + u : u)
     const rows = []
     const push = (item, placement) => {
-      const imageUrl = toAbsolute(item.image_url)
       const base = {
         title: item.title || '',
-        image_url: imageUrl,
-        thumbnail: imageUrl ? `=IMAGE("${imageUrl}")` : '',
         artist: item.artist_name || '',
         style: item.vision_style || '',
         palette: item.vision_palette || '',
         placement,
         reason: item.reason || '',
       }
-      // One row per selected product type; fall back to the item's own URL if
-      // no types are selected or the design_key can't be resolved.
-      const links = productLinksForItem(item, selectedTypes)
-      if (links.length === 0) {
-        rows.push({ ...base, product_type: '', product_url: toAbsolute(item.product_url) })
-      } else {
-        for (const l of links) rows.push({ ...base, product_type: l.label, product_url: l.url })
+      const rowFor = (productType, productUrl, img) => {
+        const imageUrl = toAbsolute(img)
+        rows.push({
+          ...base,
+          product_type: productType,
+          product_url: productUrl,
+          image_url: imageUrl,
+          thumbnail: imageUrl ? `=IMAGE("${imageUrl}")` : '',
+        })
       }
+      // One row per real available product type, each with its own product image;
+      // fall back to the item's own URL if availability is missing.
+      const links = productLinksForItem(item, selectedTypes)
+      if (links.length === 0) rowFor('', toAbsolute(item.product_url), item.image_url)
+      else for (const l of links) rowFor(l.label, l.url, l.image || item.image_url)
     }
     ;(results.primary || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Primary'))
     ;(results.accent || []).filter(i => selectedItems.has(i.product_url)).forEach(i => push(i, 'Accent'))
@@ -502,7 +510,9 @@ export default function HomePage() {
       const offeredTypes = ALL_PRODUCT_TYPES.filter(t => selectedTypes.has(t.slug)).map(t => t.label)
       const withType = (item) => {
         const links = productLinksForItem(item, selectedTypes)
-        return links.length ? { ...item, product_url: links[0].url, source_collection: links[0].label } : item
+        return links.length
+          ? { ...item, product_url: links[0].url, source_collection: links[0].label, image_url: links[0].image || item.image_url }
+          : item
       }
       const res = await fetch('/api/slides', {
         method: 'POST',
