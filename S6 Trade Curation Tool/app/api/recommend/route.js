@@ -301,13 +301,14 @@ function applyFeedbackToBrief(brief, hints) {
 }
 
 // ——— Stage: weighted scoring in Postgres ——————————————————————————————————
-async function scorePool(brief, excludeMini, prevTitles = []) {
+async function scorePool(brief, excludeMini, prevTitles = [], productTypes = []) {
   const hard = splitAvoid(lc(brief.avoidHard));
   const params = [
     lc(brief.styleTags), lc(brief.paletteTags), lc(brief.moodTags), lc(brief.keywords),
     lc(brief.subjectTokens), lc(brief.avoidSoft), POOL_CAP, POOL_LIMIT,
     hard.colorSubstrings, hard.nonColors, !!excludeMini,
     (prevTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean),
+    (productTypes || []).filter(Boolean),
   ];
   const sql = `
   WITH base AS (
@@ -324,6 +325,7 @@ async function scorePool(brief, excludeMini, prevTitles = []) {
     WHERE p.description_status = 'described'
       AND ($11 = false OR p.product_type IS DISTINCT FROM 'Mini Art Print')
       AND ($12::text[] = '{}' OR lower(p.title) <> ALL($12::text[]))
+      AND ($13::text[] = '{}' OR p.product_type = ANY($13::text[]))
   ),
   filtered AS (
     SELECT * FROM base
@@ -501,6 +503,7 @@ export async function POST(request) {
     let pinnedUrls = [], excludeMini = true;
     let refineFeedback = '', prevItemTitles = [];
     let findSimilarUrls = [];
+    let productTypes = [];
 
     const contentType = request.headers.get('content-type') || '';
     if (contentType.includes('multipart/form-data')) {
@@ -512,6 +515,7 @@ export async function POST(request) {
       refineFeedback = fd.get('refineFeedback') || '';
       try { prevItemTitles = JSON.parse(fd.get('prevItemTitles') || '[]'); } catch {}
       try { findSimilarUrls = JSON.parse(fd.get('findSimilarUrls') || '[]'); } catch {}
+      try { productTypes = JSON.parse(fd.get('productTypes') || '[]'); } catch {}
       const em = fd.get('excludeMini');
       if (em !== null && em !== undefined && em !== '') excludeMini = (em === 'true' || em === true);
     } else {
@@ -522,8 +526,10 @@ export async function POST(request) {
       refineFeedback = body.refineFeedback || '';
       prevItemTitles = body.prevItemTitles || [];
       findSimilarUrls = body.findSimilarUrls || [];
+      productTypes = body.productTypes || [];
       if (typeof body.excludeMini === 'boolean') excludeMini = body.excludeMini;
     }
+    productTypes = (Array.isArray(productTypes) ? productTypes : []).map(t => (t || '').trim()).filter(Boolean);
 
     // Normalize findSimilarUrls: accept array or newline string
     if (typeof findSimilarUrls === 'string') findSimilarUrls = findSimilarUrls.split('\n');
@@ -582,7 +588,7 @@ export async function POST(request) {
     }
 
     // —— Score (excluding previously-shown titles on a refine) ——
-    const candidates = (await scorePool(brief, excludeMini, prevItemTitles)).map(toCard);
+    const candidates = (await scorePool(brief, excludeMini, prevItemTitles, productTypes)).map(toCard);
     const totalScored = candidates.length;
 
     if (candidates.length === 0) {

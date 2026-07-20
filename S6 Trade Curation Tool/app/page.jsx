@@ -15,21 +15,25 @@ Notes: Looking for a warm, welcoming feel that reflects Savannah's coastal charm
 // Every design can be manufactured as any format on Society6, so "product type"
 // is a presentation/export choice, not a catalog filter. Slugs match stamp.py's
 // Jordan-approved TYPE_SLUGS; the S6 URL is /products/<design_key>_<slug>.
+// `slug` = S6 URL suffix; `type` = the exact product_type value stored in the
+// catalog (what the recommender filters on). Every design has ONE native type,
+// so the selector filters the pool by these types rather than inventing
+// cross-format URLs (which aren't guaranteed to exist on Society6).
 const WALL_ART_TYPES = [
-  { label: 'Art Print',           slug: 'art-print' },
-  { label: 'Framed Art Print',    slug: 'framed-art-print' },
-  { label: 'Canvas Print',        slug: 'canvas-print' },
-  { label: 'Framed Canvas Print', slug: 'framed-canvas-print' },
-  { label: 'Metal Print',         slug: 'metal-print' },
-  { label: 'Poster',              slug: 'poster' },
-  { label: 'Framed Poster',       slug: 'framed-poster' },
-  { label: 'Mini Art Print',      slug: 'mini-art-print' },
-  { label: 'Wood Wall Art',       slug: 'wood-wall-art' },
-  { label: 'Wall Tapestry',       slug: 'wall-tapestry' },
+  { label: 'Art Print',           slug: 'art-print',           type: 'Art Print' },
+  { label: 'Framed Art Print',    slug: 'framed-art-print',    type: 'Framed Art Print' },
+  { label: 'Canvas Print',        slug: 'canvas-print',        type: 'Canvas Print' },
+  { label: 'Framed Canvas Print', slug: 'framed-canvas-print', type: 'Framed Canvas Print' },
+  { label: 'Metal Print',         slug: 'metal-print',         type: 'Metal Print' },
+  { label: 'Poster',              slug: 'poster',              type: 'Poster' },
+  { label: 'Framed Poster',       slug: 'framed-poster',       type: 'Framed Poster' },
+  { label: 'Mini Art Print',      slug: 'mini-art-print',      type: 'Mini Art Print' },
+  { label: 'Wood Wall Art',       slug: 'wood-wall-art',       type: 'Wood Wall Art' },
+  { label: 'Wall Tapestry',       slug: 'wall-tapestry',       type: 'Wall Tapestry' },
 ]
 const PILLOW_TYPES = [
-  { label: 'Throw Pillow',                slug: 'throw-pillow' },
-  { label: 'Rectangular (Lumbar) Pillow', slug: 'rectangular-pillow' },
+  { label: 'Throw Pillow',                slug: 'throw-pillow',       type: 'Throw Pillow' },
+  { label: 'Rectangular (Lumbar) Pillow', slug: 'rectangular-pillow', type: 'Rectangular Pillow' },
 ]
 const ALL_PRODUCT_TYPES = [...WALL_ART_TYPES, ...PILLOW_TYPES]
 const PRODUCT_TYPE_SLUGS = ALL_PRODUCT_TYPES.map(t => t.slug)
@@ -37,35 +41,16 @@ const PRODUCT_TYPE_SLUGS = ALL_PRODUCT_TYPES.map(t => t.slug)
 // statement walls); pillows off. Keeps the old "exclude mini" default behavior.
 const DEFAULT_TYPE_SLUGS = WALL_ART_TYPES.filter(t => t.slug !== 'mini-art-print').map(t => t.slug)
 
-// Known S6 format suffixes (longest-first) so we can strip one off a product URL
-// to recover the design_key when an item doesn't carry design_key directly.
-const S6_FORMAT_SLUGS = [
-  'framed-canvas-print', 'framed-art-print', 'mini-art-print', 'foil-art-print',
-  'rectangular-pillow', 'canvas-print', 'framed-poster', 'wall-tapestry',
-  'wood-wall-art', 'wall-hanging', 'metal-print', 'throw-pillow', 'collage-set',
-  'wall-mural', 'wallpaper', 'art-print', 'poster',
-].sort((a, b) => b.length - a.length)
-
-function designKeyForItem(item) {
-  if (item && item.design_key) return item.design_key
-  const u = (item && item.product_url) || ''
-  const m = u.match(/\/products\/([^?\/#]+)/)
-  if (!m) return null
-  let slug = m[1]
-  for (const s of S6_FORMAT_SLUGS) {
-    if (slug.endsWith('_' + s)) { slug = slug.slice(0, -(s.length + 1)); break }
-  }
-  return slug || null
-}
-
-// Build the {label, slug, url} links for an item across the selected types,
-// in ALL_PRODUCT_TYPES order (wall art first). selectedSlugs is a Set.
-function productLinksForItem(item, selectedSlugs) {
-  const key = designKeyForItem(item)
-  if (!key) return []
-  return ALL_PRODUCT_TYPES
-    .filter(t => selectedSlugs.has(t.slug))
-    .map(t => ({ label: t.label, slug: t.slug, url: `https://society6.com/products/${key}_${t.slug}` }))
+// The reliable link + label for a design is its NATIVE product (the type stored
+// in the catalog, which has a real image and a working URL). We do NOT fabricate
+// cross-format URLs. Returns a one-element array to fit the card/CSV rendering.
+function productLinksForItem(item) {
+  if (!item) return []
+  let url = item.product_url || ''
+  if (url.startsWith('/')) url = 'https://society6.com' + url
+  if (!url) return []
+  const label = item.product_type || item.source_collection || 'View on Society6'
+  return [{ label, slug: 'native', url }]
 }
 
 function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null, productLinks = null }) {
@@ -256,6 +241,8 @@ export default function HomePage() {
   // preserving the old "exclude mini" behavior.
   const [selectedTypes, setSelectedTypes] = useState(() => new Set(DEFAULT_TYPE_SLUGS))
   const excludeMini = !selectedTypes.has('mini-art-print')
+  // Native product_type values to filter the recommendation pool by.
+  const selectedProductTypes = ALL_PRODUCT_TYPES.filter(t => selectedTypes.has(t.slug)).map(t => t.type)
 
   function toggleType(slug) {
     setSelectedTypes(prev => {
@@ -308,7 +295,7 @@ export default function HomePage() {
   const [deckTargetPieces, setDeckTargetPieces] = useState('')
   const [deckNotes, setDeckNotes] = useState('')
 
-  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls }) {
+  async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls, productTypes }) {
     let res
     if (moodboardFile) {
       const fd = new FormData()
@@ -319,13 +306,14 @@ export default function HomePage() {
       if (prevItemTitles?.length) fd.append('prevItemTitles', JSON.stringify(prevItemTitles))
       if (pinnedUrls?.length) fd.append('pinnedUrls', JSON.stringify(pinnedUrls))
       if (findSimilarUrls?.length) fd.append('findSimilarUrls', JSON.stringify(findSimilarUrls))
+      if (productTypes?.length) fd.append('productTypes', JSON.stringify(productTypes))
       fd.append('excludeMini', String(excludeMini))
       res = await fetch('/api/recommend', { method: 'POST', body: fd })
     } else {
       res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls }),
+        body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls, productTypes }),
       })
     }
     const data = await res.json()
@@ -343,7 +331,7 @@ export default function HomePage() {
     setRefineHistory([])
     try {
       const findSimilarUrls = findSimilarText.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 7)
-      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, excludeMini, findSimilarUrls })
+      const data = await callRecommend({ brief: briefText, moodboardUrl, moodboardFile, pinnedUrls, excludeMini, findSimilarUrls, productTypes: selectedProductTypes })
       setResults(data)
       if (data.brief?.clientName) setDeckClientName(data.brief.clientName)
       if (data.brief?.projectName) setDeckProjectName(data.brief.projectName)
@@ -384,6 +372,7 @@ export default function HomePage() {
       const data = await callRecommend({
         brief: briefText, moodboardUrl, moodboardFile, refineFeedback,
         prevItemTitles, pinnedUrls: mergedPinnedUrls, excludeMini, findSimilarUrls,
+        productTypes: selectedProductTypes,
       })
       setRefineHistory(h => [...h, refineFeedback])
       setRefineFeedback('')
@@ -700,7 +689,7 @@ export default function HomePage() {
                 <button type="button" onClick={clearTypes} className="text-gray-500 hover:text-gray-800 underline">None</button>
               </div>
             </div>
-            <p className="text-xs text-gray-500 mb-3">Each recommended design is offered in the types you check. Wall art is on by default; add pillows for clients who want them. (Mini Art Prints are excluded from results unless checked.)</p>
+            <p className="text-xs text-gray-500 mb-3">Only designs available in the checked product types are shown, each linking to that product on Society6. Wall art is on by default; add pillows for clients who want them. (Mini Art Prints are excluded unless checked.)</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
               <div>
                 <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Wall Art</div>
