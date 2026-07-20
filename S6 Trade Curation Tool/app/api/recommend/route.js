@@ -306,7 +306,7 @@ async function scorePool(brief, excludeMini, prevTitles = [], productTypes = [])
   const params = [
     lc(brief.styleTags), lc(brief.paletteTags), lc(brief.moodTags), lc(brief.keywords),
     lc(brief.subjectTokens), lc(brief.avoidSoft), POOL_CAP, POOL_LIMIT,
-    hard.colorSubstrings, hard.nonColors, !!excludeMini,
+    hard.colorSubstrings, hard.nonColors,
     (prevTitles || []).map(t => (t || '').toLowerCase().trim()).filter(Boolean),
     (productTypes || []).filter(Boolean),
   ];
@@ -323,9 +323,12 @@ async function scorePool(brief, excludeMini, prevTitles = [], productTypes = [])
     FROM products p
     JOIN enrichment_results e ON e.product_id = p.id AND e.is_current = true
     WHERE p.description_status = 'described'
-      AND ($11 = false OR p.product_type IS DISTINCT FROM 'Mini Art Print')
-      AND ($12::text[] = '{}' OR lower(p.title) <> ALL($12::text[]))
-      AND ($13::text[] = '{}' OR p.product_type = ANY($13::text[]))
+      AND ($11::text[] = '{}' OR lower(p.title) <> ALL($11::text[]))
+      -- Only designs actually available in at least one selected product type
+      -- (real availability from design_formats, not the single imported type).
+      AND ($12::text[] = '{}' OR EXISTS (
+            SELECT 1 FROM design_formats df
+            WHERE df.design_key = p.design_key AND df.product_type = ANY($12::text[])))
   ),
   filtered AS (
     SELECT * FROM base
@@ -348,7 +351,12 @@ async function scorePool(brief, excludeMini, prevTitles = [], productTypes = [])
     FROM scored WHERE score > 0
   )
   SELECT s6_product_id, title, artist_name, artist_handle, product_type, design_key,
-         image_url, product_url, vision_subject, vision_style, vision_palette, vision_mood, score
+         image_url, product_url, vision_subject, vision_style, vision_palette, vision_mood, score,
+         (SELECT json_agg(json_build_object('type', df.product_type, 'url', df.url, 'image_url', df.image_url)
+                          ORDER BY df.product_type)
+            FROM design_formats df
+            WHERE df.design_key = ranked.design_key
+              AND ($12::text[] = '{}' OR df.product_type = ANY($12::text[]))) AS available_formats
   FROM ranked WHERE artist_rn <= $7
   ORDER BY score DESC, s6_product_id LIMIT $8`;
   const res = await getPool().query(sql, params);
@@ -356,16 +364,25 @@ async function scorePool(brief, excludeMini, prevTitles = [], productTypes = [])
 }
 
 // Fetch specific designs by design_key (for pinned items), bypassing scoring.
-async function fetchByDesignKeys(keys) {
+// Pass productTypes (may be empty = all offered) to attach available_formats for
+// rendering; omit it (Find-Similar seeds) to skip that work.
+async function fetchByDesignKeys(keys, productTypes = null) {
   if (!keys.length) return [];
+  const withFormats = Array.isArray(productTypes);
   const sql = `
     SELECT p.s6_product_id, p.title, p.artist_name, p.artist_handle, p.product_type,
            p.design_key, p.image_url, p.product_url,
            e.vision_subject, e.vision_style, e.vision_palette, e.vision_mood
+           ${withFormats ? `,
+           (SELECT json_agg(json_build_object('type', df.product_type, 'url', df.url, 'image_url', df.image_url)
+                            ORDER BY df.product_type)
+              FROM design_formats df
+              WHERE df.design_key = p.design_key
+                AND ($2::text[] = '{}' OR df.product_type = ANY($2::text[]))) AS available_formats` : ''}
     FROM products p
     JOIN enrichment_results e ON e.product_id = p.id AND e.is_current = true
     WHERE p.design_key = ANY($1::text[])`;
-  const res = await getPool().query(sql, [keys]);
+  const res = await getPool().query(sql, withFormats ? [keys, productTypes.filter(Boolean)] : [keys]);
   return res.rows;
 }
 
@@ -625,7 +642,7 @@ export async function POST(request) {
     if (allPinUrls.length > 0) {
       const keys = Array.from(new Set(allPinUrls.map(designKeyFromUrl).filter(Boolean)));
       if (keys.length > 0) {
-        const rows = (await fetchByDesignKeys(keys)).map(toCard);
+        const rows = (await fetchByDesignKeys(keys, productTypes)).map(toCard);
         const foundKeys = new Set(rows.map(r => r.design_key));
         pinnedUnmatched = keys.filter(k => !foundKeys.has(k)).length;
         if (rows.length > 0) {

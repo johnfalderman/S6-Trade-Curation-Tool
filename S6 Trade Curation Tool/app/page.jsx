@@ -41,16 +41,25 @@ const PRODUCT_TYPE_SLUGS = ALL_PRODUCT_TYPES.map(t => t.slug)
 // statement walls); pillows off. Keeps the old "exclude mini" default behavior.
 const DEFAULT_TYPE_SLUGS = WALL_ART_TYPES.filter(t => t.slug !== 'mini-art-print').map(t => t.slug)
 
-// The reliable link + label for a design is its NATIVE product (the type stored
-// in the catalog, which has a real image and a working URL). We do NOT fabricate
-// cross-format URLs. Returns a one-element array to fit the card/CSV rendering.
+// Preferred display order for format links (wall art first, then pillows).
+const TYPE_ORDER = new Map(ALL_PRODUCT_TYPES.map((t, i) => [t.type, i]))
+
+// Links come from the design's REAL available formats (from design_formats via
+// the API), already filtered to the selected types. Each links to a genuine
+// product page. Falls back to the item's native URL if availability is missing.
 function productLinksForItem(item) {
   if (!item) return []
+  const fmts = item.available_formats
+  if (Array.isArray(fmts) && fmts.length) {
+    return [...fmts]
+      .sort((a, b) => (TYPE_ORDER.get(a.type) ?? 99) - (TYPE_ORDER.get(b.type) ?? 99))
+      .filter(f => f && f.url)
+      .map(f => ({ label: f.type, slug: f.type, url: f.url }))
+  }
   let url = item.product_url || ''
   if (url.startsWith('/')) url = 'https://society6.com' + url
   if (!url) return []
-  const label = item.product_type || item.source_collection || 'View on Society6'
-  return [{ label, slug: 'native', url }]
+  return [{ label: item.product_type || item.source_collection || 'View on Society6', slug: 'native', url }]
 }
 
 function ArtworkCard({ item, size = 'md', pinned = false, selected = true, onToggle = null, onPinToggle = null, productLinks = null }) {
