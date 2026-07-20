@@ -34,6 +34,7 @@ const WALL_ART_TYPES = [
 const PILLOW_TYPES = [
   { label: 'Throw Pillow',                slug: 'throw-pillow',       type: 'Throw Pillow' },
   { label: 'Rectangular (Lumbar) Pillow', slug: 'rectangular-pillow', type: 'Rectangular Pillow' },
+  { label: 'Shower Curtain',              slug: 'shower-curtain',     type: 'Shower Curtain' },
 ]
 const ALL_PRODUCT_TYPES = [...WALL_ART_TYPES, ...PILLOW_TYPES]
 const PRODUCT_TYPE_SLUGS = ALL_PRODUCT_TYPES.map(t => t.slug)
@@ -724,7 +725,7 @@ export default function HomePage() {
                 </div>
               </div>
               <div>
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Pillows</div>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Home Goods</div>
                 <div className="flex flex-col gap-1.5">
                   {PILLOW_TYPES.map(t => (
                     <label key={t.slug} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
