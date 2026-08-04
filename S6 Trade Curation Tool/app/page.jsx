@@ -929,113 +929,21 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Generate Deck */}
+          {/* Export */}
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-6">
             <div className="flex items-center justify-between mb-1">
-              <div className="font-semibold text-gray-900">Generate PowerPoint Deck</div>
-              <span className="text-xs text-gray-500">{selectedItems.size} items selected for deck</span>
+              <div className="font-semibold text-gray-900">Export</div>
+              <span className="text-xs text-gray-500">{selectedItems.size} items selected</span>
             </div>
-            <p className="text-sm text-gray-500 mb-4">Downloads a .pptx of the pieces marked <strong>In deck</strong>. Use the select control on each card to include or exclude pieces.</p>
+            <p className="text-sm text-gray-500 mb-4">Downloads a CSV of the pieces marked <strong>In deck</strong> — one row per product, with image, link, and details. Open in Google Sheets for thumbnail previews. Use the select control on each card to include or exclude pieces.</p>
 
-            <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Cover Slide Info</p>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Client / Company Name</label>
-                  <input type="text" value={deckClientName} onChange={e => setDeckClientName(e.target.value)} placeholder="e.g. The Roosevelt Hotel" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Project Name</label>
-                  <input type="text" value={deckProjectName} onChange={e => setDeckProjectName(e.target.value)} placeholder="e.g. Lobby Renovation" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Location</label>
-                  <input type="text" value={deckLocation} onChange={e => setDeckLocation(e.target.value)} placeholder="e.g. Nashville, TN" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Date</label>
-                  <input type="text" value={deckDate} onChange={e => setDeckDate(e.target.value)} placeholder="e.g. April 2026" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-              </div>
-            </div>
-
-            <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Project Brief Slide</p>
-              <p className="text-xs text-gray-400 mb-3">Pre-filled from the brief. Edit freely — any field left blank is omitted from the slide.</p>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Type</label>
-                  <input type="text" value={deckType} onChange={e => setDeckType(e.target.value)} placeholder="e.g. hotel" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Target Pieces</label>
-                  <input type="text" value={deckTargetPieces} onChange={e => setDeckTargetPieces(e.target.value)} placeholder="e.g. 80" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-                </div>
-              </div>
-              <div className="mb-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Style <span className="text-gray-400 font-normal">(comma-separated)</span></label>
-                <input type="text" value={deckStyle} onChange={e => setDeckStyle(e.target.value)} placeholder="e.g. minimalist, line art, watercolor" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div className="mb-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Palette <span className="text-gray-400 font-normal">(comma-separated)</span></label>
-                <input type="text" value={deckPalette} onChange={e => setDeckPalette(e.target.value)} placeholder="e.g. blue, sage green, cream" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div className="mb-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Avoid <span className="text-gray-400 font-normal">(comma-separated)</span></label>
-                <input type="text" value={deckAvoid} onChange={e => setDeckAvoid(e.target.value)} placeholder="e.g. brown, orange, western" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div className="mb-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Rooms <span className="text-gray-400 font-normal">(comma-separated)</span></label>
-                <input type="text" value={deckRooms} onChange={e => setDeckRooms(e.target.value)} placeholder="e.g. lobby, guest rooms, restaurant" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div className="mb-3">
-                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                  <input type="checkbox" checked={deckGalleryWall} onChange={e => setDeckGalleryWall(e.target.checked)} className="accent-gray-900 w-4 h-4" />
-                  <span className="font-medium">Gallery Wall</span>
-                  <span className="text-xs text-gray-400 font-normal">(shown on the slide only when checked)</span>
-                </label>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Notes <span className="text-gray-400 font-normal">(free text — appears on the brief slide; omitted if blank)</span></label>
-                <textarea value={deckNotes} onChange={e => setDeckNotes(e.target.value)} rows={3} placeholder="Any extra context for the brief slide…" className="w-full border border-gray-300 rounded-lg p-2 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 mb-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Your Name</label>
-                <input type="text" value={providerName} onChange={e => setProviderName(e.target.value)} placeholder="e.g. Sarah Chen" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
-                <input type="email" value={providerEmail} onChange={e => setProviderEmail(e.target.value)} placeholder="e.g. sarah@society6.com" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
-                <input type="tel" value={providerPhone} onChange={e => setProviderPhone(e.target.value)} placeholder="e.g. 555-867-5309" className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400" />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-medium text-gray-600">Images per slide:</label>
-                <select value={imagesPerSlide} onChange={e => setImagesPerSlide(Number(e.target.value))} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400">
-                  {[4, 8, 12].map(n => (<option key={n} value={n}>{n}</option>))}
-                </select>
-              </div>
-              <button onClick={handleGenerateSlides} disabled={slidesLoading} className="btn-accent">
-                {slidesLoading ? 'Building deck...' : 'Generate Slides Deck'}
-              </button>
-              <button onClick={downloadCsv} className="btn-secondary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews.">
-                Download CSV
-              </button>
-            </div>
+            <button onClick={downloadCsv} className="btn-primary" title="Download CSV of selected items. Open in Google Sheets for thumbnail previews.">
+              Download CSV
+            </button>
 
             {slidesResult && (
               <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-green-800 mb-2">Deck downloaded</div>
+                <div className="text-sm font-medium text-green-800 mb-2">CSV downloaded</div>
                 <div className="text-sm text-green-700">{slidesResult.filename} — check your Downloads folder.</div>
               </div>
             )}
