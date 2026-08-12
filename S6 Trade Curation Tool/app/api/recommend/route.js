@@ -18,7 +18,7 @@ import pg from 'pg';
 // ———————————————————————————————————————————————————————————————————————————
 
 const W_STYLE = 3, W_PALETTE = 2, W_MOOD = 1, W_KEYWORD = 4, W_SUBJECT = 8, W_AVOID_SOFT = 8;
-const POOL_CAP = 3, POOL_LIMIT = 200, FINAL_CAP = 2, FINAL_N = 20;
+const POOL_CAP = 4, POOL_LIMIT = 200, FINAL_CAP = 4, FINAL_N = 50;
 const SEED_CAP = 7;  // max Find-Similar seed URLs
 const PARSE_MODEL = 'claude-haiku-4-5-20251001';
 const SELECT_MODEL = 'claude-haiku-4-5-20251001';
@@ -394,7 +394,7 @@ async function selectWithClaude(candidates, brief) {
     `${i}|${r.title}|by ${r.artist_name}|subj:${r.vision_subject}|style:${r.vision_style}|palette:${r.vision_palette}`).join('\n');
   const avoidAll = [...(brief.avoidHard||[]), ...(brief.avoidSoft||[])];
   const msg = await client.messages.create({
-    model: SELECT_MODEL, max_tokens: 2500,
+    model: SELECT_MODEL, max_tokens: 6000,
     messages: [{ role: 'user', content:
 `You are an expert art curator for Society6's trade program, choosing wall art for a client.
 
