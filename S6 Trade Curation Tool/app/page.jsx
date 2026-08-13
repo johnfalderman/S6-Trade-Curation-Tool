@@ -322,7 +322,7 @@ export default function HomePage() {
   const [deckNotes, setDeckNotes] = useState('')
 
   async function callRecommend({ brief, moodboardUrl, moodboardFile, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls, productTypes }) {
-    let res
+    let options
     if (moodboardFile) {
       const fd = new FormData()
       fd.append('brief', brief)
@@ -334,17 +334,41 @@ export default function HomePage() {
       if (findSimilarUrls?.length) fd.append('findSimilarUrls', JSON.stringify(findSimilarUrls))
       if (productTypes?.length) fd.append('productTypes', JSON.stringify(productTypes))
       fd.append('excludeMini', String(excludeMini))
-      res = await fetch('/api/recommend', { method: 'POST', body: fd })
+      options = { method: 'POST', body: fd }
     } else {
-      res = await fetch('/api/recommend', {
+      options = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brief, moodboardUrl, refineFeedback, prevItemTitles, pinnedUrls, excludeMini, findSimilarUrls, productTypes }),
-      })
+      }
     }
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Unknown error')
-    return data
+    // A cold-started serverless function can exceed Netlify's ~10s limit and return
+    // a 504 (an HTML gateway page, not JSON). The next request hits a now-warm
+    // function and succeeds, so we transparently retry timeout-style failures.
+    const MAX_ATTEMPTS = 3
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let res
+      try {
+        res = await fetch('/api/recommend', options)
+      } catch (e) {
+        if (attempt < MAX_ATTEMPTS) { await sleep(1500); continue }
+        throw new Error('Could not reach the recommendation service. Please try again.')
+      }
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < MAX_ATTEMPTS) {
+        await sleep(1500); continue
+      }
+      const text = await res.text()
+      let data
+      try { data = JSON.parse(text) }
+      catch {
+        if (attempt < MAX_ATTEMPTS) { await sleep(1500); continue }
+        throw new Error('The recommendation service timed out. Please try again.')
+      }
+      if (!res.ok) throw new Error(data.error || 'Unknown error')
+      return data
+    }
+    throw new Error('The recommendation service timed out. Please try again.')
   }
 
   async function handleGenerate(e) {
