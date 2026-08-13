@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import pg from 'pg';
+export const maxDuration = 26;
 
 // ———————————————————————————————————————————————————————————————————————————
 // Trade Curation Tool — recommendation engine (Neon-backed, per-design catalog)
