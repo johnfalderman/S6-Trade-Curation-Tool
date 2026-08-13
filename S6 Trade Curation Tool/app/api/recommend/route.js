@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 import pg from 'pg';
+
+// Two sequential Claude calls (brief parse + curation) plus DB scoring can exceed
+// the default 10s serverless limit on a cold start → 504. Raise the ceiling to
+// Netlify's max for synchronous functions so cold starts still complete.
 export const maxDuration = 26;
 
 // ———————————————————————————————————————————————————————————————————————————
@@ -515,6 +519,16 @@ function mergeBriefs(primary, seed) {
 }
 
 // ——— Route handler ——————————————————————————————————————————————————————————
+// Keep-warm endpoint. A scheduled Netlify function pings this every few minutes so
+// the container (and the expensive cold-start work — the pg pool + the Claude SDK
+// dynamic import) stays hot, which is what pushes a cold POST over the ~10s limit.
+export async function GET() {
+  const out = { ok: true, warmed: { db: false, sdk: false } };
+  try { await getPool().query('SELECT 1'); out.warmed.db = true; } catch (e) { out.dbError = e.message; }
+  try { await import('@anthropic-ai/sdk'); out.warmed.sdk = true; } catch (e) { out.sdkError = e.message; }
+  return NextResponse.json(out);
+}
+
 export async function POST(request) {
   try {
     let briefText = '', moodboardUrl = '', moodboardFile = null;
