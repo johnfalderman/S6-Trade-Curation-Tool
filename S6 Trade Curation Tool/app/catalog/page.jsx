@@ -260,7 +260,12 @@ export default function CatalogPage() {
         <Link href="/" className="text-white/40 text-xs hover:text-white/70 transition-colors">
           ← curation tool
         </Link>
-        <span className="text-white/20 text-xs tracking-widest uppercase">admin only</span>
+        <div className="flex items-center gap-4">
+          <Link href="/catalog/new-designs" className="text-violet-400/70 text-xs hover:text-violet-300 transition-colors">
+            new designs →
+          </Link>
+          <span className="text-white/20 text-xs tracking-widest uppercase">admin only</span>
+        </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
