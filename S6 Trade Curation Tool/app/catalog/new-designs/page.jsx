@@ -103,9 +103,8 @@ function NewDesignsInner() {
   }, [uploadId]);
 
   const loadTypes = useCallback(async () => {
-    if (!uploadId) return;
     try {
-      const res = await fetch(`/api/new-designs/types?uploadId=${uploadId}`);
+      const res = await fetch('/api/new-designs/types' + (uploadId ? `?uploadId=${uploadId}` : ''));
       setTypesData(await res.json());
     } catch {}
   }, [uploadId]);
@@ -364,13 +363,13 @@ function NewDesignsInner() {
         <Link href="/" className="text-white/40 text-xs hover:text-white/70 transition-colors">← curation tool</Link>
         <div className="flex items-center gap-4">
           <Link href="/catalog" className="text-white/25 text-xs hover:text-white/60 transition-colors">legacy enrichment →</Link>
-          <span className="text-white/20 text-xs tracking-widest uppercase">new designs</span>
+          <span className="text-white/20 text-xs tracking-widest uppercase">catalog enrichment update</span>
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">New Designs</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Catalog Enrichment Update</h1>
           <p className="text-white/40 text-sm mt-1">
             Upload a full catalog export → new artwork gets copy → download the Matrixify import.
           </p>
@@ -447,17 +446,18 @@ function NewDesignsInner() {
           )}
         </div>
 
-        {/* STEP 2 — format sentences */}
-        {uploadId && (
+        {/* STEP 2 — format sentences (library always visible; missing types are upload-scoped) */}
+        {!state?.needsSetup && (
           <div className="bg-white/5 border border-white/10 rounded-xl p-5">
             <h2 className="text-white/60 text-xs uppercase tracking-widest mb-1">Step 2 · Product-format sentences</h2>
             <p className="text-white/25 text-xs mb-4">
-              {state?.formatTypes || 0} product types have an approved sentence. Existing sentences are approved and final —
-              only a brand-new product type needs one written here.
+              {state?.formatTypes || 0} product types have an approved sentence — these are appended to every
+              page's copy. Only a brand-new product type needs one written; existing ones can be reviewed and
+              edited below (edits apply to future exports).
             </p>
-            {missingTypes.length === 0 ? (
-              <p className="text-green-400 text-xs">✓ Every product type in this upload has an approved sentence.</p>
-            ) : missingTypes.map(m => <NewTypeForm key={m.type} type={m.type} pages={m.pages} onSaved={() => { loadTypes(); loadExportCounts(); }} />)}
+            {uploadId && (missingTypes.length === 0 ? (
+              <p className="text-green-400 text-xs mb-2">✓ Every product type in this upload has an approved sentence.</p>
+            ) : missingTypes.map(m => <NewTypeForm key={m.type} type={m.type} pages={m.pages} onSaved={() => { loadTypes(); loadExportCounts(); }} />))}
             <button onClick={() => setShowAllTypes(v => !v)} className="mt-3 text-xs text-white/30 underline hover:text-white/60">
               {showAllTypes ? 'hide' : 'view / edit'} all approved sentences{typesData?.sentences ? ` (${typesData.sentences.length})` : ''}
             </button>
@@ -595,6 +595,29 @@ function NewDesignsInner() {
             </div>
           </div>
         )}
+
+        {/* Catalog data export (same files as the legacy enrichment page) */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+          <h2 className="text-white/60 text-xs uppercase tracking-widest mb-1">Catalog Data Export</h2>
+          <p className="text-white/25 text-xs mb-4">
+            Download the enriched catalog data (curation tags, descriptions) for handoff to the product or
+            data teams. Not part of the monthly run — here so you never need the legacy page.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <a href="/api/catalog/export?format=csv" download
+              className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:bg-white/10 hover:text-white/80 transition-colors">
+              Full catalog (CSV)
+            </a>
+            <a href="/api/catalog/export?format=csv&onlyEnriched=true" download
+              className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:bg-white/10 hover:text-white/80 transition-colors">
+              Enriched only (CSV)
+            </a>
+            <a href="/api/catalog/export?format=json" download
+              className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:bg-white/10 hover:text-white/80 transition-colors">
+              JSON
+            </a>
+          </div>
+        </div>
       </div>
 
       {/* edit modal */}
@@ -623,7 +646,7 @@ function NewDesignsInner() {
       )}
 
       <div className="border-t border-white/5 px-6 py-4 text-center text-white/15 text-xs">
-        Society6 New-Design Enrichment · Internal Use Only
+        Society6 Catalog Enrichment · Internal Use Only
       </div>
     </div>
   );

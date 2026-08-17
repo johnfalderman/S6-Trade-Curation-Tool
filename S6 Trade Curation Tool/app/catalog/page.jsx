@@ -262,7 +262,7 @@ export default function CatalogPage() {
         </Link>
         <div className="flex items-center gap-4">
           <Link href="/catalog/new-designs" className="text-violet-400/70 text-xs hover:text-violet-300 transition-colors">
-            new designs →
+            enrichment update →
           </Link>
           <span className="text-white/20 text-xs tracking-widest uppercase">admin only</span>
         </div>

@@ -28,7 +28,7 @@ export default function RootLayout({ children }) {
         <footer className="text-center text-xs text-gray-400 py-8 mt-16 border-t border-gray-200">
           Society6 Curation Tool BETA — Internal Use Only
           <span className="text-gray-300"> · </span>
-          <a href="/catalog/new-designs" className="text-gray-400 hover:text-gray-500">New Designs</a>
+          <a href="/catalog/new-designs" className="text-gray-400 hover:text-gray-500">Catalog Enrichment Update</a>
           <span className="text-gray-300"> · </span>
           <a href="/catalog" className="text-gray-400 hover:text-gray-500">Enrichment</a>
         </footer>
