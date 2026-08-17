@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getPool } from '../../../../lib/newDesigns.js';
+import { getPool, OFFERED_TYPES } from '../../../../lib/newDesigns.js';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 26;
@@ -27,6 +27,25 @@ const MAP = {
   handle: ['product_handle', 'handle'],
   description_status: ['description_status'],
 };
+
+// Idempotent, once per lambda: newer columns on nd_pages + the curation
+// tool's design_formats table (same shape build_design_formats.mjs creates,
+// but never dropped — we only ever append).
+let _auxReady = false;
+async function ensureAux(pool) {
+  if (_auxReady) return;
+  await pool.query(`ALTER TABLE nd_pages ADD COLUMN IF NOT EXISTS url text`);
+  await pool.query(`ALTER TABLE nd_pages ADD COLUMN IF NOT EXISTS image_url text`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS design_formats (
+      design_key   text NOT NULL,
+      product_type text NOT NULL,
+      url          text,
+      image_url    text,
+      PRIMARY KEY (design_key, product_type)
+    )`);
+  _auxReady = true;
+}
 
 let _mapping = null;
 async function getMapping(pool) {
@@ -118,18 +137,20 @@ export async function POST(request) {
       const rows = body.rows || [];
       if (!uploadId) return NextResponse.json({ error: 'uploadId required' }, { status: 400 });
       if (!rows.length) return NextResponse.json({ inserted: 0 });
+      await ensureAux(pool);
       let inserted = 0;
       const BATCH = 500;
       for (let i = 0; i < rows.length; i += BATCH) {
         const chunk = rows.slice(i, i + BATCH);
         const values = [];
         const tuples = chunk.map((r, ri) => {
-          values.push(uploadId, r.page_id ?? null, r.handle, r.product_type, r.design_key);
-          const b = ri * 5;
-          return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5})`;
+          values.push(uploadId, r.page_id ?? null, r.handle, r.product_type, r.design_key,
+            r.url ?? null, r.image_url ?? null);
+          const b = ri * 7;
+          return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`;
         });
         const res = await pool.query(
-          `INSERT INTO nd_pages (upload_id, page_id, handle, product_type, design_key)
+          `INSERT INTO nd_pages (upload_id, page_id, handle, product_type, design_key, url, image_url)
            VALUES ${tuples.join(',')} ON CONFLICT (upload_id, handle) DO NOTHING`,
           values
         );
@@ -144,7 +165,22 @@ export async function POST(request) {
         `UPDATE nd_uploads SET total_designs = $2, total_pages = $3, unknown_types = $4 WHERE id = $1`,
         [uploadId, totalDesigns, totalPages, JSON.stringify(unknownTypes)]
       );
-      return NextResponse.json({ ok: true });
+      // Feed the curation tool: register this upload's pages (offered types
+      // only) in design_formats so new designs are recommendable immediately.
+      // URL falls back to the Shopify handle path, which the front end already
+      // expands to the full society6.com link.
+      await ensureAux(pool);
+      const fmt = await pool.query(
+        `INSERT INTO design_formats (design_key, product_type, url, image_url)
+         SELECT design_key, product_type,
+                COALESCE(NULLIF(url, ''), '/products/' || handle),
+                NULLIF(image_url, '')
+         FROM nd_pages
+         WHERE upload_id = $1 AND product_type = ANY($2::text[])
+         ON CONFLICT (design_key, product_type) DO NOTHING`,
+        [uploadId, OFFERED_TYPES]
+      );
+      return NextResponse.json({ ok: true, curationFormatsAdded: fmt.rowCount });
     }
 
     return NextResponse.json({ error: 'unknown action' }, { status: 400 });
