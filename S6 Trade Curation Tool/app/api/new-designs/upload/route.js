@@ -71,21 +71,25 @@ export async function POST(request) {
       const existing = new Set(existRows.map(r => r.design_key));
       const fresh = rows.filter(r => !existing.has(r.design_key));
 
-      // Legacy rows from the original curation import can already hold the same
-      // s6_product_id (with design_key NULL — invisible to the design_key diff).
-      // On collision, CLAIM that row for the design instead of failing:
-      // set its design_key/type/image and queue it, but never touch a row that
-      // already belongs to another design or already has copy.
+      // Rows can already hold the same s6_product_id in two cases:
+      //   1. legacy curation rows (design_key NULL — invisible to the diff)
+      //   2. designs keyed under OLDER derivation rules (design_key set, but
+      //      stale — e.g. keyed before the rectangular-pillow/sheet-set slugs
+      //      existed). The current derivation is canonical.
+      // On collision, RE-KEY the row to the canonical design_key. Copy already
+      // written on that row stays attached (enrichment_results joins by
+      // product_id), so a described design becomes instantly available under
+      // its new key. Only rows without copy get queued as pending.
       let inserted = 0;
       const cols = mapping.map(m => m.col);
       const hasConflictCols = cols.includes('s6_product_id') && cols.includes('design_key');
       const conflictClause = hasConflictCols ? `
         ON CONFLICT (s6_product_id) DO UPDATE SET
-          design_key   = COALESCE(products.design_key, EXCLUDED.design_key),
+          design_key   = EXCLUDED.design_key,
           product_type = CASE WHEN products.design_key IS NULL THEN EXCLUDED.product_type ELSE products.product_type END,
-          image_url    = CASE WHEN products.design_key IS NULL AND COALESCE(EXCLUDED.image_url, '') <> '' THEN EXCLUDED.image_url ELSE products.image_url END,
+          image_url    = CASE WHEN COALESCE(products.image_url, '') = '' THEN EXCLUDED.image_url ELSE products.image_url END,
           description_status = CASE
-            WHEN products.design_key IS NULL AND products.description_status IS DISTINCT FROM 'described'
+            WHEN products.description_status IS DISTINCT FROM 'described'
             THEN EXCLUDED.description_status
             ELSE products.description_status
           END` : '';
