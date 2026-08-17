@@ -71,8 +71,24 @@ export async function POST(request) {
       const existing = new Set(existRows.map(r => r.design_key));
       const fresh = rows.filter(r => !existing.has(r.design_key));
 
+      // Legacy rows from the original curation import can already hold the same
+      // s6_product_id (with design_key NULL — invisible to the design_key diff).
+      // On collision, CLAIM that row for the design instead of failing:
+      // set its design_key/type/image and queue it, but never touch a row that
+      // already belongs to another design or already has copy.
       let inserted = 0;
       const cols = mapping.map(m => m.col);
+      const hasConflictCols = cols.includes('s6_product_id') && cols.includes('design_key');
+      const conflictClause = hasConflictCols ? `
+        ON CONFLICT (s6_product_id) DO UPDATE SET
+          design_key   = COALESCE(products.design_key, EXCLUDED.design_key),
+          product_type = CASE WHEN products.design_key IS NULL THEN EXCLUDED.product_type ELSE products.product_type END,
+          image_url    = CASE WHEN products.design_key IS NULL AND COALESCE(EXCLUDED.image_url, '') <> '' THEN EXCLUDED.image_url ELSE products.image_url END,
+          description_status = CASE
+            WHEN products.design_key IS NULL AND products.description_status IS DISTINCT FROM 'described'
+            THEN EXCLUDED.description_status
+            ELSE products.description_status
+          END` : '';
       const BATCH = 250;
       for (let i = 0; i < fresh.length; i += BATCH) {
         const chunk = fresh.slice(i, i + BATCH);
@@ -84,7 +100,10 @@ export async function POST(request) {
           });
           return `(${ph.join(',')})`;
         });
-        await pool.query(`INSERT INTO products (${cols.join(',')}) VALUES ${tuples.join(',')}`, values);
+        await pool.query(
+          `INSERT INTO products (${cols.join(',')}) VALUES ${tuples.join(',')}${conflictClause}`,
+          values
+        );
         inserted += chunk.length;
       }
       return NextResponse.json({ inserted, skipped: rows.length - fresh.length });
