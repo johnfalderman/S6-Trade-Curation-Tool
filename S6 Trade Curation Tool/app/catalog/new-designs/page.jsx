@@ -183,6 +183,7 @@ function NewDesignsInner() {
                   title: norm.indexOf('title'),
                   vendor: norm.indexOf('vendor'),
                   image: norm.findIndex(h => h.startsWith('image src') || h === 'image' || h.startsWith('image (')),
+                  url: norm.indexOf('url'),
                 };
                 if (cols.image === -1) cols.image = norm.findIndex(h => h.includes('image'));
                 if (cols.handle === -1 || cols.type === -1) {
@@ -212,6 +213,8 @@ function NewDesignsInner() {
                   handle,
                   product_type: ptype,
                   design_key: key,
+                  url: cols.url !== -1 ? (row[cols.url] || '').trim() : '',
+                  image_url: cols.image !== -1 ? (row[cols.image] || '').trim() : '',
                 });
                 if (ptype !== 'Foil Art Print' && !typeInfo[ptype]) {
                   unknownTypes.set(ptype, (unknownTypes.get(ptype) || 0) + 1);
@@ -247,6 +250,7 @@ function NewDesignsInner() {
       const pages = [...newPages.values()];
       const noImage = designs.filter(d => !d.image_url).length;
       const flatCount = designs.filter(d => typeInfo[d.product_type]?.flat).length;
+      const foilOnly = designs.filter(d => d.product_type === 'Foil Art Print').length;
       payloadRef.current = {
         designs, pages,
         unknownTypes: [...unknownTypes.entries()].map(([type, n]) => ({ type, pages: n })),
@@ -259,6 +263,7 @@ function NewDesignsInner() {
         pendingFromBefore: [...allKeys].filter(k => inDbExtra.has(k)).length,
         newDesigns: designs.length,
         flat: flatCount, mockup: designs.length - flatCount, noImage,
+        foilOnly,
         pages: pages.length,
         unknownTypes: payloadRef.current.unknownTypes,
       });
@@ -356,8 +361,11 @@ function NewDesignsInner() {
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-white font-mono">
       <div className="border-b border-white/10 px-6 py-3 flex items-center justify-between">
-        <Link href="/catalog" className="text-white/40 text-xs hover:text-white/70 transition-colors">← catalog admin</Link>
-        <span className="text-white/20 text-xs tracking-widest uppercase">new designs</span>
+        <Link href="/" className="text-white/40 text-xs hover:text-white/70 transition-colors">← curation tool</Link>
+        <div className="flex items-center gap-4">
+          <Link href="/catalog" className="text-white/25 text-xs hover:text-white/60 transition-colors">legacy enrichment →</Link>
+          <span className="text-white/20 text-xs tracking-widest uppercase">new designs</span>
+        </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
@@ -408,6 +416,9 @@ function NewDesignsInner() {
               <div className="text-white/60">Scanned {scan.rows.toLocaleString()} rows · {scan.uniqueDesigns.toLocaleString()} unique designs</div>
               <div className="text-green-400">{scan.newDesigns.toLocaleString()} NEW designs need copy ({scan.flat} flat art · {scan.mockup} mockup-only{scan.noImage ? ` · ${scan.noImage} missing an image` : ''})</div>
               {scan.pendingFromBefore > 0 && <div className="text-amber-400">{scan.pendingFromBefore.toLocaleString()} designs were imported earlier but never finished — they’ll be included</div>}
+              {scan.foilOnly > 0 && (
+                <div className="text-white/40">{scan.foilOnly.toLocaleString()} of these only exist as Foil Art Print — always excluded from publishing, so an export with few or zero pages is normal</div>
+              )}
               <div className="text-white/40">{scan.pages.toLocaleString()} product pages will get stamped</div>
               {scan.unknownTypes.length > 0 && (
                 <div className="text-amber-400">
@@ -448,17 +459,10 @@ function NewDesignsInner() {
               <p className="text-green-400 text-xs">✓ Every product type in this upload has an approved sentence.</p>
             ) : missingTypes.map(m => <NewTypeForm key={m.type} type={m.type} pages={m.pages} onSaved={() => { loadTypes(); loadExportCounts(); }} />)}
             <button onClick={() => setShowAllTypes(v => !v)} className="mt-3 text-xs text-white/30 underline hover:text-white/60">
-              {showAllTypes ? 'hide' : 'view'} all approved sentences
+              {showAllTypes ? 'hide' : 'view / edit'} all approved sentences{typesData?.sentences ? ` (${typesData.sentences.length})` : ''}
             </button>
             {showAllTypes && typesData?.sentences && (
-              <div className="mt-3 max-h-64 overflow-y-auto space-y-2 text-xs">
-                {typesData.sentences.map(s => (
-                  <div key={s.product_type} className="border-b border-white/5 pb-2">
-                    <span className="text-white/60">{s.product_type}</span>
-                    <span className="text-white/25"> — {s.sentence.slice(0, 120)}{s.sentence.length > 120 ? '…' : ''}</span>
-                  </div>
-                ))}
-              </div>
+              <SentenceBrowser sentences={typesData.sentences} onSaved={loadTypes} />
             )}
           </div>
         )}
@@ -621,6 +625,104 @@ function NewDesignsInner() {
       <div className="border-t border-white/5 px-6 py-4 text-center text-white/15 text-xs">
         Society6 New-Design Enrichment · Internal Use Only
       </div>
+    </div>
+  );
+}
+
+// ── approved-sentence browser (view + edit) ───────────────────
+
+function SentenceBrowser({ sentences, onSaved }) {
+  const [filter, setFilter] = useState('');
+  const [editingType, setEditingType] = useState(null);
+  const shown = sentences.filter(s =>
+    !filter.trim() || s.product_type.toLowerCase().includes(filter.trim().toLowerCase())
+  );
+  return (
+    <div className="mt-3">
+      <p className="text-white/25 text-xs mb-2">
+        Edits go live for all FUTURE exports the moment you save. Pages already published keep
+        their current copy until their designs are exported and imported again.
+      </p>
+      <input
+        value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter types…"
+        className="mb-2 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white/70 w-56 focus:outline-none focus:border-violet-500"
+      />
+      <div className="max-h-96 overflow-y-auto space-y-1 text-xs pr-1">
+        {shown.map(s => (
+          editingType === s.product_type ? (
+            <SentenceEditor key={s.product_type} sentence={s}
+              onDone={(saved) => { setEditingType(null); if (saved) onSaved(); }} />
+          ) : (
+            <div key={s.product_type} className="border-b border-white/5 py-2 flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <span className="text-white/60">{s.product_type}</span>
+                {s.drop_context && <span className="ml-2 text-[10px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded">functional</span>}
+                {s.flat && <span className="ml-2 text-[10px] bg-white/10 text-white/40 px-1.5 py-0.5 rounded">flat art</span>}
+                <div className="text-white/25 mt-0.5">{s.sentence}</div>
+              </div>
+              <button onClick={() => setEditingType(s.product_type)}
+                className="text-white/30 underline hover:text-white/70 shrink-0">edit</button>
+            </div>
+          )
+        ))}
+        {shown.length === 0 && <div className="text-white/25 py-2">no types match "{filter}"</div>}
+      </div>
+    </div>
+  );
+}
+
+function SentenceEditor({ sentence: s, onDone }) {
+  const [sentence, setSentence] = useState(s.sentence);
+  const [metaLabel, setMetaLabel] = useState(s.meta_label || '');
+  const [dropContext, setDropContext] = useState(!!s.drop_context);
+  const [flat, setFlat] = useState(!!s.flat);
+  const [saving, setSaving] = useState(false);
+  const [warnings, setWarnings] = useState([]);
+  const [error, setError] = useState('');
+
+  async function save() {
+    setSaving(true); setError('');
+    try {
+      const data = await postJSON('/api/new-designs/types', {
+        product_type: s.product_type, sentence, meta_label: metaLabel,
+        drop_context: dropContext, flat,
+      });
+      setWarnings(data.warnings || []);
+      if ((data.warnings || []).length === 0) onDone(true);
+    } catch (e) { setError(e.message); }
+    setSaving(false);
+  }
+
+  return (
+    <div className="border border-violet-500/30 bg-violet-500/5 rounded-lg p-3 my-1">
+      <div className="text-violet-300 font-medium mb-2">{s.product_type}</div>
+      <textarea value={sentence} onChange={e => setSentence(e.target.value)} rows={4}
+        className="w-full bg-white/5 border border-white/10 rounded-lg p-2 text-white/80 focus:outline-none focus:border-violet-500" />
+      <div className="flex items-center gap-4 mt-2 flex-wrap">
+        <label className="text-white/40">meta label:{' '}
+          <input value={metaLabel} onChange={e => setMetaLabel(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1 text-white/70 w-40 focus:outline-none" />
+        </label>
+        <label className="text-white/40 flex items-center gap-1.5">
+          <input type="checkbox" checked={dropContext} onChange={e => setDropContext(e.target.checked)} />
+          functional item
+        </label>
+        <label className="text-white/40 flex items-center gap-1.5">
+          <input type="checkbox" checked={flat} onChange={e => setFlat(e.target.checked)} />
+          flat artwork
+        </label>
+        <button onClick={save} disabled={saving || !sentence.trim()}
+          className="px-3 py-1.5 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-500 disabled:opacity-30">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={() => onDone(warnings.length > 0)} className="text-white/40 underline hover:text-white/70">
+          {warnings.length > 0 ? 'done' : 'cancel'}
+        </button>
+      </div>
+      {warnings.length > 0 && (
+        <div className="mt-2 text-amber-300">Saved, but check: {warnings.join(' · ')}</div>
+      )}
+      {error && <div className="mt-2 text-red-400">{error}</div>}
     </div>
   );
 }
