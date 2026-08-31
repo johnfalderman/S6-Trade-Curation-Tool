@@ -502,6 +502,13 @@ function NewDesignsInner() {
                 </span>
               )}
             </div>
+            {prog.no_image > 0 && (
+              <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300 text-xs">
+                {prog.no_image.toLocaleString()} design{prog.no_image > 1 ? 's have' : ' has'} no product image on file
+                (usually an export without the Image Src column). Re-upload a full export that includes
+                Image Src — clicking Generate afterwards picks the image up automatically.
+              </div>
+            )}
             {genError && <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-400 text-xs">{genError} — click Generate again to resume; nothing is lost.</div>}
             {genStats?.failures?.length > 0 && (
               <div className="mt-3 text-xs text-red-300/70 space-y-0.5">

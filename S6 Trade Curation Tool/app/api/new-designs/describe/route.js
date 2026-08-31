@@ -22,6 +22,14 @@ export const maxDuration = 26;
 // (describe-mockup.js). fix-copy.mjs cleanup is applied before writing, so
 // there is no separate fix step for Jordan to remember.
 
+// Representative-image priority for the self-heal below — same order as the
+// client's PRIO map in page.jsx (prefer flat white-bg wall art).
+const REP_IMAGE_PRIO = [
+  'Art Print', 'Poster', 'Mini Art Print', 'Canvas Print', 'Metal Print',
+  'Framed Art Print', 'Framed Canvas Print', 'Framed Poster', 'Foil Art Print',
+  'Wood Wall Art', 'Wall Tapestry', 'Wall Mural', 'Wall Hanging', 'Wallpaper',
+];
+
 async function describeOne(product, promptKind, anthropic) {
   if (!product.image_url) throw new Error('no image_url');
   const { base64, mediaType } = await fetchImageAsBase64(product.image_url);
@@ -114,6 +122,28 @@ export async function POST(request) {
     const concurrency = Math.min(parseInt(body.concurrency || 6, 10), 8);
     const retryFailed = !!body.retryFailed;
 
+    // SELF-HEAL: an earlier upload may have imported these designs WITHOUT an
+    // image (e.g. an export whose Image Src column was missing/empty). Those
+    // rows sit 'pending' forever because the work query below requires an
+    // image. If THIS upload's registered pages carry image URLs for the same
+    // design_keys, adopt one (preferring flat wall-art pages, same priority
+    // as the client's representative-row pick) before selecting work.
+    await pool.query(
+      `UPDATE products p
+       SET image_url = src.image_url, updated_at = now()
+       FROM (
+         SELECT DISTINCT ON (design_key) design_key, image_url
+         FROM nd_pages
+         WHERE upload_id = $1 AND COALESCE(image_url, '') <> ''
+         ORDER BY design_key,
+           COALESCE(array_position($2::text[], product_type), 999)
+       ) src
+       WHERE p.design_key = src.design_key
+         AND COALESCE(p.image_url, '') = ''
+         AND p.description_status <> 'described'`,
+      [uploadId, REP_IMAGE_PRIO]
+    );
+
     // recover rows a crashed/timed-out request left in 'processing' (scoped)
     await pool.query(
       `UPDATE products SET description_status = 'pending'
@@ -177,7 +207,10 @@ export async function POST(request) {
 
     const { rows: [counts] } = await pool.query(
       `SELECT
-         count(*) FILTER (WHERE description_status = 'pending')::int   AS pending,
+         count(*) FILTER (WHERE description_status = 'pending'
+                            AND COALESCE(image_url, '') <> '')::int    AS pending,
+         count(*) FILTER (WHERE description_status = 'pending'
+                            AND COALESCE(image_url, '') = '')::int     AS no_image,
          count(*) FILTER (WHERE description_status = 'failed')::int    AS failed,
          count(*) FILTER (WHERE description_status = 'described')::int AS described
        FROM products
@@ -185,6 +218,9 @@ export async function POST(request) {
       [uploadId]
     );
 
+    // remaining = actionable work only. Counting imageless pending rows here
+    // made the browser's generate loop spin forever on designs it could
+    // never process.
     return NextResponse.json({ ...stats, remaining: counts.pending, counts });
   } catch (err) {
     console.error('new-designs describe error:', err);

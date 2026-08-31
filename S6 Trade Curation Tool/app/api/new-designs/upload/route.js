@@ -90,6 +90,23 @@ export async function POST(request) {
       const existing = new Set(existRows.map(r => r.design_key));
       const fresh = rows.filter(r => !existing.has(r.design_key));
 
+      // Backfill: a design imported by an EARLIER upload without an image
+      // (export missing Image Src) keeps its row, but if this upload now
+      // carries an image for it, adopt it. Never overwrites a real image.
+      const backfill = rows.filter(r =>
+        existing.has(r.design_key) && (r.image_url || '').trim());
+      if (backfill.length) {
+        await pool.query(
+          `UPDATE products p
+           SET image_url = v.image_url, updated_at = now()
+           FROM (SELECT unnest($1::text[]) AS design_key,
+                        unnest($2::text[]) AS image_url) v
+           WHERE p.design_key = v.design_key
+             AND COALESCE(p.image_url, '') = ''`,
+          [backfill.map(r => r.design_key), backfill.map(r => r.image_url.trim())]
+        );
+      }
+
       // Rows can already hold the same s6_product_id in two cases:
       //   1. legacy curation rows (design_key NULL — invisible to the diff)
       //   2. designs keyed under OLDER derivation rules (design_key set, but
@@ -177,7 +194,9 @@ export async function POST(request) {
                 NULLIF(image_url, '')
          FROM nd_pages
          WHERE upload_id = $1 AND product_type = ANY($2::text[])
-         ON CONFLICT (design_key, product_type) DO NOTHING`,
+         ON CONFLICT (design_key, product_type) DO UPDATE SET
+           image_url = COALESCE(NULLIF(design_formats.image_url, ''), EXCLUDED.image_url),
+           url       = COALESCE(NULLIF(design_formats.url, ''), EXCLUDED.url)`,
         [uploadId, OFFERED_TYPES]
       );
       return NextResponse.json({ ok: true, curationFormatsAdded: fmt.rowCount });

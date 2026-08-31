@@ -31,7 +31,10 @@ export async function GET(request) {
     if (uploadId) {
       const { rows: [c] } = await pool.query(
         `SELECT
-           count(*) FILTER (WHERE description_status = 'pending')::int    AS pending,
+           count(*) FILTER (WHERE description_status = 'pending'
+                              AND COALESCE(image_url, '') <> '')::int     AS pending,
+           count(*) FILTER (WHERE description_status = 'pending'
+                              AND COALESCE(image_url, '') = '')::int      AS no_image,
            count(*) FILTER (WHERE description_status = 'processing')::int AS processing,
            count(*) FILTER (WHERE description_status = 'failed')::int     AS failed,
            count(*) FILTER (WHERE description_status = 'described')::int  AS described,
