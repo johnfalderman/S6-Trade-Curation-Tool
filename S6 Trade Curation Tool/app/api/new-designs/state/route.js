@@ -22,6 +22,29 @@ export async function GET(request) {
       ]);
       fmtCount = fmtRes.rows[0].n;
       uploads = upRes.rows;
+
+      // Per-upload design progress, so the page can offer a persistent
+      // library of Matrixify export files (the exports are regenerated from
+      // the DB on demand — these counts say which uploads are ready).
+      if (uploads.length > 0) {
+        const { rows: perUp } = await pool.query(
+          `SELECT np.upload_id,
+                  count(DISTINCT np.design_key)::int AS scope_designs,
+                  count(DISTINCT np.design_key)
+                    FILTER (WHERE p.description_status = 'described')::int AS described_designs
+           FROM nd_pages np
+           LEFT JOIN products p ON p.design_key = np.design_key
+           WHERE np.upload_id = ANY($1::int[])
+           GROUP BY np.upload_id`,
+          [uploads.map(u => u.id)]
+        );
+        const byId = Object.fromEntries(perUp.map(r => [r.upload_id, r]));
+        uploads = uploads.map(u => ({
+          ...u,
+          scope_designs: byId[u.id]?.scope_designs || 0,
+          described_designs: byId[u.id]?.described_designs || 0,
+        }));
+      }
     } catch (e) {
       if (e.code === '42P01') return NextResponse.json({ needsSetup: true });
       throw e;

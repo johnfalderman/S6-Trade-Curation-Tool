@@ -433,7 +433,7 @@ function NewDesignsInner() {
             </div>
           )}
 
-          {state?.uploads?.length > 0 && !scan && (
+          {state?.uploads?.length > 0 && (
             <div className="mt-4 text-xs text-white/30">
               Recent uploads:{' '}
               {state.uploads.map(u => (
@@ -603,6 +603,50 @@ function NewDesignsInner() {
               </a>
               <button onClick={loadExportCounts} className="px-3 py-1.5 text-xs text-white/30 underline hover:text-white/60">refresh counts</button>
             </div>
+          </div>
+        )}
+
+        {/* Matrixify file library — the export files never disappear: they are
+            rebuilt from the database on every click, so any past upload's
+            sample and full import CSV can be re-downloaded here. */}
+        {state?.uploads?.some(u => u.scope_designs > 0) && (
+          <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+            <h2 className="text-white/60 text-xs uppercase tracking-widest mb-1">Matrixify file library</h2>
+            <p className="text-white/25 text-xs mb-4">
+              Every upload's import files, re-downloadable any time (they're rebuilt live from the
+              database, so they always reflect the latest copy edits).
+            </p>
+            <div className="space-y-2 text-xs">
+              {state.uploads.filter(u => u.scope_designs > 0).map(u => (
+                <div key={u.id} className="flex items-center gap-3 flex-wrap border-b border-white/5 pb-2">
+                  <Link href={`/catalog/new-designs?upload=${u.id}`} className="text-white/60 underline hover:text-white/90 shrink-0">
+                    #{u.id}
+                  </Link>
+                  <span className="text-white/30 shrink-0">
+                    {u.created_at ? new Date(u.created_at).toLocaleDateString() : ''} · {u.scope_designs.toLocaleString()} designs in scope
+                  </span>
+                  {u.described_designs >= u.scope_designs ? (
+                    <span className="text-green-400 shrink-0">✓ all copy generated</span>
+                  ) : (
+                    <span className="text-amber-400 shrink-0">{u.described_designs.toLocaleString()} of {u.scope_designs.toLocaleString()} described</span>
+                  )}
+                  <span className="flex gap-2 ml-auto shrink-0">
+                    <a href={`/api/new-designs/export?uploadId=${u.id}&sample=20`} download
+                      className="px-2 py-1 bg-white/5 border border-white/10 rounded text-white/60 hover:bg-white/10">
+                      Sample (20)
+                    </a>
+                    <a href={`/api/new-designs/export?uploadId=${u.id}`} download
+                      className="px-2 py-1 bg-violet-600/60 border border-violet-500/30 rounded text-white hover:bg-violet-500/70">
+                      Full import CSV
+                    </a>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-white/20 text-xs mt-3">
+              Pages whose copy isn't generated yet are simply left out of the file — finish Step 3 first
+              for a complete import.
+            </p>
           </div>
         )}
 
