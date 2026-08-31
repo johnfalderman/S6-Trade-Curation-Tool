@@ -484,9 +484,11 @@ function NewDesignsInner() {
                   className="px-4 py-2 bg-white/10 text-white/70 rounded-lg text-sm hover:bg-white/20">Pause</button>
               ) : (
                 <>
-                  <button onClick={() => runGenerate(false)} disabled={prog.pending === 0}
+                  <button onClick={() => runGenerate(false)} disabled={prog.pending === 0 && !prog.no_image}
                     className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-500 disabled:opacity-30">
-                    {prog.pending === 0 ? 'Nothing pending' : `Generate (${prog.pending.toLocaleString()} pending)`}
+                    {prog.pending === 0 && !prog.no_image
+                      ? 'Nothing pending'
+                      : `Generate (${(prog.pending + (prog.no_image || 0)).toLocaleString()} pending)`}
                   </button>
                   {prog.failed > 0 && (
                     <button onClick={() => runGenerate(true)}
@@ -505,8 +507,9 @@ function NewDesignsInner() {
             {prog.no_image > 0 && (
               <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300 text-xs">
                 {prog.no_image.toLocaleString()} design{prog.no_image > 1 ? 's have' : ' has'} no product image on file
-                (usually an export without the Image Src column). Re-upload a full export that includes
-                Image Src — clicking Generate afterwards picks the image up automatically.
+                (usually an export without the Image Src column). Click Generate — if a later upload's pages
+                carry images for them, they're adopted automatically. Any that remain after that need a
+                re-upload of a full export that includes Image Src.
               </div>
             )}
             {genError && <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-400 text-xs">{genError} — click Generate again to resume; nothing is lost.</div>}
