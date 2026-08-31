@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server';
 import pg from 'pg';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 26;
 
 const { Pool } = pg;
 const ARRAY_SEP = '|';
+const BATCH = 5000; // rows per DB round-trip; streamed out as they arrive
 const COLUMNS = [
   'title',
   'product_url',
@@ -45,14 +47,12 @@ async function viewExists(pool, name) {
 }
 
 // Shared SELECT that works whether we're querying the view or the raw tables.
-// Returns rows with camelCase keys matching COLUMNS.
-async function fetchRecords(onlyEnriched) {
-  const pool = getPool();
-  const useView = await viewExists(pool, 'enriched_products');
-
-  let sql;
+// Batched with LIMIT/OFFSET so the whole catalog never sits in memory at once
+// — the previous buffered version exceeded the serverless response limits as
+// the catalog grew and downloads died with "Site wasn't available".
+function buildSql(useView, onlyEnriched) {
   if (useView) {
-    sql = `
+    return `
       SELECT
         title,
         product_url,
@@ -71,42 +71,54 @@ async function fetchRecords(onlyEnriched) {
       FROM enriched_products
       ${onlyEnriched ? "WHERE vision_summary IS NOT NULL AND vision_summary != ''" : ''}
       ORDER BY id
-    `;
-  } else {
-    const join = onlyEnriched ? 'INNER' : 'LEFT';
-    sql = `
-      SELECT
-        p.title,
-        p.product_url,
-        p.s6_product_id       AS product_handle,
-        ''                    AS source_collection,
-        p.image_url,
-        ''                    AS image_alt,
-        r.vision_summary      AS "visionSummary",
-        r.vision_subject      AS "visionSubject",
-        r.vision_style        AS "visionStyle",
-        r.vision_palette      AS "visionPalette",
-        r.vision_mood         AS "visionMood",
-        r.vision_keywords     AS "visionKeywords",
-        r.created_at          AS "visionAt",
-        p.enrichment_error    AS "visionError"
-      FROM products p
-      ${join} JOIN enrichment_results r
-        ON r.product_id = p.id AND r.is_current = true
-      ORDER BY p.id
+      LIMIT $1 OFFSET $2
     `;
   }
-
-  const { rows } = await pool.query(sql);
-
-  // Normalize: convert Date objects to ISO strings, coerce nulls on array fields.
-  return rows.map(r => ({
-    ...r,
-    visionAt: r.visionAt instanceof Date ? r.visionAt.toISOString() : (r.visionAt || ''),
-  }));
+  const join = onlyEnriched ? 'INNER' : 'LEFT';
+  return `
+    SELECT
+      p.title,
+      p.product_url,
+      p.s6_product_id       AS product_handle,
+      ''                    AS source_collection,
+      p.image_url,
+      ''                    AS image_alt,
+      r.vision_summary      AS "visionSummary",
+      r.vision_subject      AS "visionSubject",
+      r.vision_style        AS "visionStyle",
+      r.vision_palette      AS "visionPalette",
+      r.vision_mood         AS "visionMood",
+      r.vision_keywords     AS "visionKeywords",
+      r.created_at          AS "visionAt",
+      p.enrichment_error    AS "visionError"
+    FROM products p
+    ${join} JOIN enrichment_results r
+      ON r.product_id = p.id AND r.is_current = true
+    ORDER BY p.id
+    LIMIT $1 OFFSET $2
+  `;
 }
 
-// ——— GET: download enriched catalog ———————————————————————————————————————
+function normalize(r) {
+  return {
+    ...r,
+    visionAt: r.visionAt instanceof Date ? r.visionAt.toISOString() : (r.visionAt || ''),
+  };
+}
+
+async function* recordBatches(onlyEnriched) {
+  const pool = getPool();
+  const useView = await viewExists(pool, 'enriched_products');
+  const sql = buildSql(useView, onlyEnriched);
+  for (let offset = 0; ; offset += BATCH) {
+    const { rows } = await pool.query(sql, [BATCH, offset]);
+    if (rows.length === 0) return;
+    yield rows.map(normalize);
+    if (rows.length < BATCH) return;
+  }
+}
+
+// ——— GET: download enriched catalog (streamed) ————————————————————————————
 // Query params:
 //   ?format=csv (default) — listing_records.csv-shape with vision columns
 //                            appended. Pipe-delimited inside array cells.
@@ -118,31 +130,46 @@ export async function GET(request) {
     const format = (url.searchParams.get('format') || 'csv').toLowerCase();
     const onlyEnriched = url.searchParams.get('onlyEnriched') === 'true';
 
-    const records = await fetchRecords(onlyEnriched);
-
     const dateStamp = new Date().toISOString().slice(0, 10);
     const filenameBase = onlyEnriched
       ? `s6-catalog-enriched-${dateStamp}`
       : `s6-catalog-full-${dateStamp}`;
 
-    if (format === 'json') {
-      return new NextResponse(JSON.stringify(records, null, 2), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Content-Disposition': `attachment; filename="${filenameBase}.json"`,
-          'Cache-Control': 'no-store',
-        },
-      });
-    }
+    const encoder = new TextEncoder();
+    const isJson = format === 'json';
 
-    // CSV — default. UTF-8 BOM so Excel opens it cleanly.
-    const csv = recordsToCsv(records);
-    return new NextResponse('﻿' + csv, {
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          if (isJson) {
+            controller.enqueue(encoder.encode('['));
+            let first = true;
+            for await (const batch of recordBatches(onlyEnriched)) {
+              const chunk = batch.map(r => JSON.stringify(r)).join(',\n');
+              controller.enqueue(encoder.encode((first ? '\n' : ',\n') + chunk));
+              first = false;
+            }
+            controller.enqueue(encoder.encode('\n]\n'));
+          } else {
+            // UTF-8 BOM so Excel opens it cleanly, then the header row.
+            controller.enqueue(encoder.encode('﻿' + COLUMNS.join(',') + '\n'));
+            for await (const batch of recordBatches(onlyEnriched)) {
+              controller.enqueue(encoder.encode(batchToCsv(batch)));
+            }
+          }
+          controller.close();
+        } catch (err) {
+          console.error('Export stream error:', err);
+          controller.error(err);
+        }
+      },
+    });
+
+    return new Response(stream, {
       status: 200,
       headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${filenameBase}.csv"`,
+        'Content-Type': isJson ? 'application/json; charset=utf-8' : 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filenameBase}.${isJson ? 'json' : 'csv'}"`,
         'Cache-Control': 'no-store',
       },
     });
@@ -152,8 +179,8 @@ export async function GET(request) {
   }
 }
 
-function recordsToCsv(records) {
-  const lines = [COLUMNS.join(',')];
+function batchToCsv(records) {
+  const lines = [];
   for (const r of records) {
     const row = COLUMNS.map(col => {
       const v = r[col];
@@ -163,7 +190,7 @@ function recordsToCsv(records) {
     });
     lines.push(row.join(','));
   }
-  return lines.join('\n');
+  return lines.join('\n') + '\n';
 }
 
 function csvEscape(s) {
